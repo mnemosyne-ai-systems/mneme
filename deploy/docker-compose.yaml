@@ -1,0 +1,62 @@
+version: "3.8"
+
+# 本地开发依赖：Pulsar / ClickHouse / Redis
+# 使用：make deps-up / make deps-down
+
+services:
+  pulsar:
+    image: apachepulsar/pulsar:3.2.2
+    container_name: mneme-pulsar
+    command: bin/pulsar standalone
+    ports:
+      - "6650:6650"
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "bin/pulsar-admin", "brokers", "healthcheck"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - pulsar-data:/pulsar/data
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: mneme-clickhouse
+    ports:
+      - "9000:9000"
+      - "8123:8123"
+    environment:
+      CLICKHOUSE_DB: mnemosyne
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: mneme-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis-data:/data
+
+volumes:
+  pulsar-data:
+  clickhouse-data:
+  redis-data:

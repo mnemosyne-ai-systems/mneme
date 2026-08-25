@@ -1,0 +1,64 @@
+package storage
+
+// DDL 语句：服务启动时幂等执行，确保数据库结构就绪。
+const (
+	// DDLHistoryMessage 会话历史表。
+	DDLHistoryMessage = `
+CREATE TABLE IF NOT EXISTS history_message (
+    message_id String,
+    tenant_id  String,
+    session_id String,
+    user_id    String,
+    role       String,
+    content    String,
+    model_name String,
+    total_tokens Int32,
+    prompt_tokens Int32,
+    completion_tokens Int32,
+    response_time_ms Int32,
+    metadata   String,
+    created_at DateTime
+) ENGINE = MergeTree()
+ORDER BY (tenant_id, session_id, created_at)
+PARTITION BY toYYYYMM(created_at)`
+
+	// DDLAgentTraces 短期轨迹表（TTL 7 天）。
+	DDLAgentTraces = `
+CREATE TABLE IF NOT EXISTS agent_traces (
+    request_id String,
+    tenant_id  String,
+    session_id String,
+    user_id    String,
+    step_type  String,
+    step_name  String,
+    input      String,
+    output     String,
+    metadata   Map(String, String),
+    duration_ms Int32,
+    timestamp  DateTime
+) ENGINE = MergeTree()
+ORDER BY (tenant_id, request_id, timestamp)
+TTL timestamp + INTERVAL 7 DAY`
+
+	// DDLEntityMemory 实体记忆表（ReplacingMergeTree 支持版本更新）。
+	DDLEntityMemory = `
+CREATE TABLE IF NOT EXISTS entity_memory (
+    entity_id   String,
+    tenant_id   String,
+    entity_type String,
+    profile     String,
+    _version    Int64,
+    updated_at  DateTime
+) ENGINE = ReplacingMergeTree(_version)
+ORDER BY (tenant_id, entity_type, entity_id)`
+)
+
+// SchemaStatements 返回按顺序执行的建表语句。
+func SchemaStatements() []string {
+	return []string{DDLHistoryMessage, DDLAgentTraces, DDLEntityMemory}
+}
+
+// DatabaseDDL 返回创建数据库的语句。
+func DatabaseDDL(db string) string {
+	return "CREATE DATABASE IF NOT EXISTS " + db
+}
