@@ -167,10 +167,11 @@ var openAPISpec = map[string]interface{}{
 		"/admin/api/users": map[string]interface{}{
 			"get": map[string]interface{}{
 				"summary": "[后台] 列出用户与画像（需 admin.token，若已配置）",
-				"parameters": []map[string]interface{}{
-					{"name": "limit", "in": "query", "required": false, "schema": map[string]interface{}{"type": "integer"}},
-				},
-				"responses": map[string]interface{}{"200": map[string]interface{}{"description": "users"}},
+			"parameters": []map[string]interface{}{
+				{"name": "limit", "in": "query", "required": false, "schema": map[string]interface{}{"type": "integer"}},
+				{"name": "cursor", "in": "query", "required": false, "schema": map[string]interface{}{"type": "string", "description": "分页游标（上一页返回的 next_cursor）"}},
+			},
+			"responses": map[string]interface{}{"200": map[string]interface{}{"description": "users（含 next_cursor 分页游标）"}},
 			},
 		},
 		"/admin/api/users/{user_id}": map[string]interface{}{
@@ -187,8 +188,9 @@ var openAPISpec = map[string]interface{}{
 					{"name": "user_id", "in": "query", "required": false, "schema": map[string]interface{}{"type": "string"}},
 					{"name": "q", "in": "query", "required": false, "schema": map[string]interface{}{"type": "string"}},
 					{"name": "limit", "in": "query", "required": false, "schema": map[string]interface{}{"type": "integer"}},
+					{"name": "cursor", "in": "query", "required": false, "schema": map[string]interface{}{"type": "string", "description": "分页游标（上一页返回的 next_cursor）"}},
 				},
-				"responses": map[string]interface{}{"200": map[string]interface{}{"description": "sessions"}},
+				"responses": map[string]interface{}{"200": map[string]interface{}{"description": "sessions（按时间倒序，含 next_cursor 分页游标）"}},
 			},
 		},
 		"/admin/api/sessions/{session_id}": map[string]interface{}{
@@ -197,6 +199,15 @@ var openAPISpec = map[string]interface{}{
 		},
 		"/admin/api/sessions/{session_id}/export": map[string]interface{}{
 			"get": map[string]interface{}{"summary": "[后台] 导出单个会话总结（JSON）", "parameters": []map[string]interface{}{{"name": "session_id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "example": "sess-demo-001"}}}, "responses": map[string]interface{}{"200": map[string]interface{}{"description": "json"}}},
+		},
+		"/admin/api/audit": map[string]interface{}{
+			"get": map[string]interface{}{
+				"summary": "[后台] 查看管理操作审计日志（删除/导出等变更）",
+				"parameters": []map[string]interface{}{
+					{"name": "limit", "in": "query", "required": false, "schema": map[string]interface{}{"type": "integer"}},
+				},
+				"responses": map[string]interface{}{"200": map[string]interface{}{"description": "audit（最新在前）"}},
+			},
 		},
 	},
 }

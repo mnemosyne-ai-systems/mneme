@@ -72,3 +72,12 @@ func SessionKey(tenant, sessionID string) string {
 func SessionVersionKey(tenant, sessionID string) string {
 	return fmt.Sprintf("%s:sessver:%s:%s", KeyPrefix, tenant, sessionID)
 }
+
+// DeletedField 是软删除标记字段（写入 Hash，读取时跳过）。
+const DeletedField = "_deleted"
+
+// AuditKey 返回管理操作审计日志的 Redis List Key：
+// mnemosyne:mneme:audit:{tenant}
+func AuditKey(tenant string) string {
+	return fmt.Sprintf("%s:audit:%s", KeyPrefix, tenant)
+}

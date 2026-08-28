@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,14 +20,18 @@ import (
 type SessionSummaryStore interface {
 	SaveSummary(ctx context.Context, summary *models.SessionSummary) (int64, error)
 	GetSummary(ctx context.Context, tenant, sessionID string) (*models.SessionSummary, error)
-	// ListSessionsByUser 返回某租户下属于指定用户的全部会话总结。
+	// ListSessionsByUser 返回某租户下属于指定用户的全部会话总结（按结束时间倒序）。
 	ListSessionsByUser(ctx context.Context, tenant, userID string) ([]*models.SessionSummary, error)
-	// SearchSessions 检索会话总结（管理后台用），支持按 user_id 与关键字过滤。
-	SearchSessions(ctx context.Context, tenant string, opts SessionSearchOptions) ([]*models.SessionSummary, error)
-	// DeleteSession 删除单个会话总结（数据治理）。
+	// SearchSessions 检索会话总结（管理后台用），支持按 user_id 与关键字过滤、游标分页、按时间倒序。
+	SearchSessions(ctx context.Context, tenant string, opts SessionSearchOptions) ([]*models.SessionSummary, string, error)
+	// DeleteSession 软删除单个会话总结（数据治理，可恢复）。
 	DeleteSession(ctx context.Context, tenant, sessionID string) error
-	// DeleteSessionsByUser 删除某用户下的全部会话总结（数据治理）。
+	// PurgeSession 硬删除单个会话总结（不可恢复）。
+	PurgeSession(ctx context.Context, tenant, sessionID string) error
+	// DeleteSessionsByUser 软删除某用户下的全部会话总结。
 	DeleteSessionsByUser(ctx context.Context, tenant, userID string) error
+	// PurgeSessionsByUser 硬删除某用户下的全部会话总结。
+	PurgeSessionsByUser(ctx context.Context, tenant, userID string) error
 }
 
 // SessionSearchOptions 会话检索选项。
@@ -35,6 +40,8 @@ type SessionSearchOptions struct {
 	UserID string
 	// Query 关键字，匹配 session_id 或 summary 子串（可选）。
 	Query string
+	// Cursor 分页游标（由上一页返回的 next_cursor），空表示首页。
+	Cursor string
 	// Limit 返回条数上限，<=0 表示默认 100。
 	Limit int
 }
@@ -95,20 +102,20 @@ func (s *RedisSessionSummaryStore) SaveSummary(ctx context.Context, summary *mod
 	return version, nil
 }
 
-// GetSummary 从 Redis 读取会话总结。
+// GetSummary 从 Redis 读取会话总结（已软删除的返回 nil）。
 func (s *RedisSessionSummaryStore) GetSummary(ctx context.Context, tenant, sessionID string) (*models.SessionSummary, error) {
 	key := cache.SessionKey(tenant, sessionID)
 	res, err := s.client.HGetAll(ctx, key).Result()
 	if err != nil {
 		return nil, fmt.Errorf("session store: hgetall: %w", err)
 	}
-	if len(res) == 0 {
+	if len(res) == 0 || res[cache.DeletedField] == "1" {
 		return nil, nil
 	}
 	return sessionFromHash(res), nil
 }
 
-// ListSessionsByUser 扫描该租户下的会话 Hash，按 user_id 过滤。
+// ListSessionsByUser 扫描该租户下的会话 Hash，按 user_id 过滤并按结束时间倒序返回。
 func (s *RedisSessionSummaryStore) ListSessionsByUser(ctx context.Context, tenant, userID string) ([]*models.SessionSummary, error) {
 	iter := s.client.Scan(ctx, 0, cache.SessionKey(tenant, "*"), 0).Iterator()
 	var out []*models.SessionSummary
@@ -116,6 +123,9 @@ func (s *RedisSessionSummaryStore) ListSessionsByUser(ctx context.Context, tenan
 		res, err := s.client.HGetAll(ctx, iter.Val()).Result()
 		if err != nil {
 			return nil, fmt.Errorf("session store: hgetall: %w", err)
+		}
+		if res[cache.DeletedField] == "1" {
+			continue
 		}
 		if res["user_id"] != userID {
 			continue
@@ -125,27 +135,25 @@ func (s *RedisSessionSummaryStore) ListSessionsByUser(ctx context.Context, tenan
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("session store: scan: %w", err)
 	}
+	sortSessionsByEndedAt(out)
 	return out, nil
 }
 
-// SearchSessions 检索会话总结（管理后台）。
-func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant string, opts SessionSearchOptions) ([]*models.SessionSummary, error) {
+// SearchSessions 检索会话总结（管理后台），支持按 user_id 与关键字过滤、游标分页、按时间倒序。
+func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant string, opts SessionSearchOptions) ([]*models.SessionSummary, string, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	q := strings.ToLower(opts.Query)
 	iter := s.client.Scan(ctx, 0, cache.SessionKey(tenant, "*"), 0).Iterator()
-	var out []*models.SessionSummary
+	var all []*models.SessionSummary
 	for iter.Next(ctx) {
-		if len(out) >= limit {
-			break
-		}
 		res, err := s.client.HGetAll(ctx, iter.Val()).Result()
 		if err != nil {
-			return nil, fmt.Errorf("session store: hgetall: %w", err)
+			return nil, "", fmt.Errorf("session store: hgetall: %w", err)
 		}
-		if len(res) == 0 {
+		if len(res) == 0 || res[cache.DeletedField] == "1" {
 			continue
 		}
 		if opts.UserID != "" && res["user_id"] != opts.UserID {
@@ -157,16 +165,39 @@ func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant st
 				continue
 			}
 		}
-		out = append(out, sessionFromHash(res))
+		all = append(all, sessionFromHash(res))
 	}
 	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("session store: scan: %w", err)
+		return nil, "", fmt.Errorf("session store: scan: %w", err)
 	}
-	return out, nil
+	sortSessionsByEndedAt(all)
+	offset := decodeCursor(opts.Cursor)
+	if offset > len(all) {
+		offset = len(all)
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	page := all[offset:end]
+	next := ""
+	if end < len(all) {
+		next = encodeCursor(end)
+	}
+	return page, next, nil
 }
 
-// DeleteSession 删除单个会话总结（Hash + 版本号）。
+// DeleteSession 软删除：标记 _deleted（可恢复）。
 func (s *RedisSessionSummaryStore) DeleteSession(ctx context.Context, tenant, sessionID string) error {
+	key := cache.SessionKey(tenant, sessionID)
+	if err := s.client.HSet(ctx, key, cache.DeletedField, "1", "_updated_at", time.Now().UTC().Format(time.RFC3339)).Err(); err != nil {
+		return fmt.Errorf("session store: soft delete: %w", err)
+	}
+	return nil
+}
+
+// PurgeSession 硬删除：真正清理 Hash 与版本号（不可恢复）。
+func (s *RedisSessionSummaryStore) PurgeSession(ctx context.Context, tenant, sessionID string) error {
 	key := cache.SessionKey(tenant, sessionID)
 	verKey := cache.SessionVersionKey(tenant, sessionID)
 	if err := s.client.Del(ctx, key, verKey).Err(); err != nil {
@@ -175,7 +206,7 @@ func (s *RedisSessionSummaryStore) DeleteSession(ctx context.Context, tenant, se
 	return nil
 }
 
-// DeleteSessionsByUser 删除某用户下的全部会话总结。
+// DeleteSessionsByUser 软删除某用户下的全部会话总结。
 func (s *RedisSessionSummaryStore) DeleteSessionsByUser(ctx context.Context, tenant, userID string) error {
 	list, err := s.ListSessionsByUser(ctx, tenant, userID)
 	if err != nil {
@@ -187,6 +218,27 @@ func (s *RedisSessionSummaryStore) DeleteSessionsByUser(ctx context.Context, ten
 		}
 	}
 	return nil
+}
+
+// PurgeSessionsByUser 硬删除某用户下的全部会话总结。
+func (s *RedisSessionSummaryStore) PurgeSessionsByUser(ctx context.Context, tenant, userID string) error {
+	list, err := s.ListSessionsByUser(ctx, tenant, userID)
+	if err != nil {
+		return err
+	}
+	for _, sum := range list {
+		if err := s.PurgeSession(ctx, tenant, sum.SessionID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sortSessionsByEndedAt 按结束时间倒序排序（最近的在前）。
+func sortSessionsByEndedAt(sessions []*models.SessionSummary) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		return sessions[i].EndedAt.After(sessions[j].EndedAt)
+	})
 }
 
 func sessionFromHash(res map[string]string) *models.SessionSummary {
@@ -219,6 +271,7 @@ type MemorySessionSummaryStore struct {
 	mu        sync.RWMutex
 	summaries map[string]*models.SessionSummary
 	versions  map[string]int64
+	deleted   map[string]bool
 	inserter  storage.BatchInserter
 }
 
@@ -227,6 +280,7 @@ func NewMemorySessionSummaryStore(inserter storage.BatchInserter) *MemorySession
 	return &MemorySessionSummaryStore{
 		summaries: make(map[string]*models.SessionSummary),
 		versions:  make(map[string]int64),
+		deleted:   make(map[string]bool),
 		inserter:  inserter,
 	}
 }
@@ -244,6 +298,7 @@ func (s *MemorySessionSummaryStore) SaveSummary(ctx context.Context, summary *mo
 	cp.Version = version
 	cp.UpdatedAt = time.Now().UTC()
 	s.summaries[key] = &cp
+	s.deleted[key] = false
 	s.mu.Unlock()
 
 	if s.inserter != nil {
@@ -254,20 +309,20 @@ func (s *MemorySessionSummaryStore) SaveSummary(ctx context.Context, summary *mo
 	return version, nil
 }
 
-// GetSummary 读取总结。
+// GetSummary 读取总结（已软删除的返回 nil）。
 func (s *MemorySessionSummaryStore) GetSummary(_ context.Context, tenant, sessionID string) (*models.SessionSummary, error) {
 	key := cache.SessionKey(tenant, sessionID)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p, ok := s.summaries[key]
-	if !ok {
+	if !ok || s.deleted[key] {
 		return nil, nil
 	}
 	cp := *p
 	return &cp, nil
 }
 
-// ListSessionsByUser 返回属于指定用户的全部会话总结。
+// ListSessionsByUser 返回属于指定用户的全部会话总结（按结束时间倒序，跳过已删除）。
 func (s *MemorySessionSummaryStore) ListSessionsByUser(_ context.Context, tenant, userID string) ([]*models.SessionSummary, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -276,30 +331,32 @@ func (s *MemorySessionSummaryStore) ListSessionsByUser(_ context.Context, tenant
 		if !strings.HasPrefix(key, cache.SessionKey(tenant, "")) {
 			continue
 		}
-		if p.UserID != userID {
+		if s.deleted[key] || p.UserID != userID {
 			continue
 		}
 		cp := *p
 		out = append(out, &cp)
 	}
+	sortSessionsByEndedAt(out)
 	return out, nil
 }
 
-// SearchSessions 检索内存中的会话总结。
-func (s *MemorySessionSummaryStore) SearchSessions(_ context.Context, tenant string, opts SessionSearchOptions) ([]*models.SessionSummary, error) {
+// SearchSessions 检索内存中的会话总结（游标分页、按时间倒序、跳过已删除）。
+func (s *MemorySessionSummaryStore) SearchSessions(_ context.Context, tenant string, opts SessionSearchOptions) ([]*models.SessionSummary, string, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	q := strings.ToLower(opts.Query)
+	prefix := cache.SessionKey(tenant, "")
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var out []*models.SessionSummary
+	var all []*models.SessionSummary
 	for key, p := range s.summaries {
-		if len(out) >= limit {
-			break
+		if !strings.HasPrefix(key, prefix) {
+			continue
 		}
-		if !strings.HasPrefix(key, cache.SessionKey(tenant, "")) {
+		if s.deleted[key] {
 			continue
 		}
 		if opts.UserID != "" && p.UserID != opts.UserID {
@@ -312,35 +369,71 @@ func (s *MemorySessionSummaryStore) SearchSessions(_ context.Context, tenant str
 			}
 		}
 		cp := *p
-		out = append(out, &cp)
+		all = append(all, &cp)
 	}
-	return out, nil
+	sortSessionsByEndedAt(all)
+	offset := decodeCursor(opts.Cursor)
+	if offset > len(all) {
+		offset = len(all)
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	page := all[offset:end]
+	next := ""
+	if end < len(all) {
+		next = encodeCursor(end)
+	}
+	return page, next, nil
 }
 
-// DeleteSession 删除内存中的单个会话总结。
+// DeleteSession 软删除：标记 deleted（可恢复）。
 func (s *MemorySessionSummaryStore) DeleteSession(_ context.Context, tenant, sessionID string) error {
+	key := cache.SessionKey(tenant, sessionID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleted[key] = true
+	return nil
+}
+
+// PurgeSession 硬删除：真正清理内存总结。
+func (s *MemorySessionSummaryStore) PurgeSession(_ context.Context, tenant, sessionID string) error {
 	key := cache.SessionKey(tenant, sessionID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.summaries, key)
 	delete(s.versions, key)
+	delete(s.deleted, key)
 	return nil
 }
 
-// DeleteSessionsByUser 删除内存中某用户下的全部会话总结。
+// DeleteSessionsByUser 软删除内存中某用户下的全部会话总结。
 func (s *MemorySessionSummaryStore) DeleteSessionsByUser(_ context.Context, tenant, userID string) error {
 	prefix := cache.SessionKey(tenant, "")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, p := range s.summaries {
-		if !strings.HasPrefix(key, prefix) {
+		if !strings.HasPrefix(key, prefix) || p.UserID != userID {
 			continue
 		}
-		if p.UserID != userID {
+		s.deleted[key] = true
+	}
+	return nil
+}
+
+// PurgeSessionsByUser 硬删除内存中某用户下的全部会话总结。
+func (s *MemorySessionSummaryStore) PurgeSessionsByUser(_ context.Context, tenant, userID string) error {
+	prefix := cache.SessionKey(tenant, "")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, p := range s.summaries {
+		if !strings.HasPrefix(key, prefix) || p.UserID != userID {
 			continue
 		}
 		delete(s.summaries, key)
 		delete(s.versions, key)
+		delete(s.deleted, key)
 	}
 	return nil
 }

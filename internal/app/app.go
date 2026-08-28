@@ -259,9 +259,13 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		TracingEnabled: cfg.Telemetry.TracingEnabled,
 	}
 
-	// 后台管理界面（可选，默认关闭）：用户/画像浏览、会话检索、数据治理。
+	// 后台管理界面（可选，默认关闭）：用户/画像浏览、会话检索、数据治理（软删除 + 审计）。
 	if cfg.Admin.Enabled {
-		app.adminHandler = api.NewAdminHandler(profileStore, app.sessionStore, cfg.Admin.Token)
+		var auditStore service.AuditStore = service.NewMemoryAuditStore()
+		if redisClient != nil {
+			auditStore = service.NewRedisAuditStore(redisClient)
+		}
+		app.adminHandler = api.NewAdminHandler(profileStore, app.sessionStore, auditStore, cfg.Admin.Token)
 		routerOpts.Admin = app.adminHandler
 		routerOpts.AdminUI = api.NewAdminUIHandler(cfg.Admin.PageTitle)
 	}

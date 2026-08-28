@@ -13,17 +13,18 @@ import (
 	"github.com/mnemosyne/mneme/pkg/models"
 )
 
-// AdminHandler 轻量后台管理接口：用户/画像浏览、会话总结检索、数据治理（删除/导出）。
-// 不做复杂鉴权，仅支持可选静态令牌（Token）薄保护。
+// AdminHandler 轻量后台管理接口：用户/画像浏览、会话总结检索、数据治理（软删除/硬删除/导出）。
+// 不做复杂鉴权，仅支持可选静态令牌（Token）薄保护；所有变更操作记录审计日志。
 type AdminHandler struct {
 	profiles service.ProfileStore
 	sessions service.SessionSummaryStore
+	audit    service.AuditStore
 	token    string
 }
 
-// NewAdminHandler 创建后台管理 handler。profiles/sessions 可为 nil（对应功能返回 404）。
-func NewAdminHandler(profiles service.ProfileStore, sessions service.SessionSummaryStore, token string) *AdminHandler {
-	return &AdminHandler{profiles: profiles, sessions: sessions, token: token}
+// NewAdminHandler 创建后台管理 handler。profiles/sessions/audit 可为 nil（对应功能返回 404）。
+func NewAdminHandler(profiles service.ProfileStore, sessions service.SessionSummaryStore, audit service.AuditStore, token string) *AdminHandler {
+	return &AdminHandler{profiles: profiles, sessions: sessions, audit: audit, token: token}
 }
 
 // Register 注册后台管理路由到给定子路由（前缀 /admin/api）。
@@ -36,6 +37,7 @@ func (h *AdminHandler) Register(r *mux.Router) {
 	r.HandleFunc("/sessions/{session_id}", h.GetSession).Methods(http.MethodGet)
 	r.HandleFunc("/sessions/{session_id}/export", h.ExportSession).Methods(http.MethodGet)
 	r.HandleFunc("/sessions/{session_id}", h.DeleteSession).Methods(http.MethodDelete)
+	r.HandleFunc("/audit", h.ListAudit).Methods(http.MethodGet)
 }
 
 func (h *AdminHandler) authorize(r *http.Request) bool {
@@ -50,11 +52,36 @@ func (h *AdminHandler) authorize(r *http.Request) bool {
 	return (q.Get("token") == h.token) || (q.Get("__t") == h.token)
 }
 
+// actor 返回操作人标识：优先取 Bearer 令牌，否则记为 "admin"。
+func (h *AdminHandler) actor(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return "admin"
+}
+
+// recordAudit 记录一条管理操作审计日志（audit 为 nil 时安全跳过）。
+func (h *AdminHandler) recordAudit(r *http.Request, action, target, detail string) {
+	if h.audit == nil {
+		return
+	}
+	if err := h.audit.Append(r.Context(), service.AuditEntry{
+		TenantID: h.tenant(r),
+		Actor:    h.actor(r),
+		Action:   action,
+		Target:   target,
+		Detail:   detail,
+	}); err != nil {
+		logger.FromContext(r.Context()).WithError(err).Warn("admin audit append failed")
+	}
+}
+
 func (h *AdminHandler) tenant(r *http.Request) string {
 	return tenantFrom(r)
 }
 
-// ListUsers 处理 GET /admin/api/users。
+// ListUsers 处理 GET /admin/api/users?limit=&cursor=。
 func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(r) {
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid admin token")
@@ -70,7 +97,10 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	list, err := h.profiles.ListProfiles(r.Context(), tenant, models.EntityTypeUser, service.ListOptions{Limit: limit})
+	list, next, err := h.profiles.ListProfiles(r.Context(), tenant, models.EntityTypeUser, service.ListOptions{
+		Limit:  limit,
+		Cursor: r.URL.Query().Get("cursor"),
+	})
 	if err != nil {
 		logger.FromContext(r.Context()).WithError(err).Error("admin list users failed")
 		internalError(w, "failed to list users")
@@ -83,10 +113,10 @@ func (h *AdminHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 			"profile": e.Profile,
 		})
 	}
-	writeOK(w, map[string]interface{}{"tenant_id": tenant, "users": out, "count": len(out)})
+	writeOK(w, map[string]interface{}{"tenant_id": tenant, "users": out, "count": len(out), "next_cursor": next})
 }
 
-// GetUser 处理 GET /admin/api/users/{user_id}（聚合画像 + 会话列表）。
+// GetUser 处理 GET /admin/api/users/{user_id}（聚合画像 + 会话列表，会话按时间倒序）。
 func (h *AdminHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(r) {
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid admin token")
@@ -139,14 +169,18 @@ func (h *AdminHandler) ExportUser(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := mux.Vars(r)["user_id"]
 	profile, _ := h.profiles.GetProfile(r.Context(), tenant, models.EntityTypeUser, userID)
-	sessions, _ := h.sessions.ListSessionsByUser(r.Context(), tenant, userID)
+	var sessions []*models.SessionSummary
+	if h.sessions != nil {
+		sessions, _ = h.sessions.ListSessionsByUser(r.Context(), tenant, userID)
+	}
 	body := map[string]interface{}{"user_id": userID, "tenant_id": tenant, "profile": profile, "sessions": sessions}
+	h.recordAudit(r, service.AuditActionExportUser, userID, "")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=user_"+userID+".json")
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// DeleteUser 处理 DELETE /admin/api/users/{user_id}（数据治理：删画像 + 其全部会话）。
+// DeleteUser 处理 DELETE /admin/api/users/{user_id}?hard=。默认软删除（可恢复），hard=true 为硬删除。
 func (h *AdminHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(r) {
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid admin token")
@@ -158,24 +192,43 @@ func (h *AdminHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := mux.Vars(r)["user_id"]
+	hard := r.URL.Query().Get("hard") == "true"
+
 	if h.profiles != nil {
-		if err := h.profiles.DeleteProfile(r.Context(), tenant, models.EntityTypeUser, userID); err != nil {
+		var err error
+		if hard {
+			err = h.profiles.PurgeProfile(r.Context(), tenant, models.EntityTypeUser, userID)
+		} else {
+			err = h.profiles.DeleteProfile(r.Context(), tenant, models.EntityTypeUser, userID)
+		}
+		if err != nil {
 			logger.FromContext(r.Context()).WithError(err).Error("admin delete profile failed")
 			internalError(w, "failed to delete profile")
 			return
 		}
 	}
 	if h.sessions != nil {
-		if err := h.sessions.DeleteSessionsByUser(r.Context(), tenant, userID); err != nil {
+		var err error
+		if hard {
+			err = h.sessions.PurgeSessionsByUser(r.Context(), tenant, userID)
+		} else {
+			err = h.sessions.DeleteSessionsByUser(r.Context(), tenant, userID)
+		}
+		if err != nil {
 			logger.FromContext(r.Context()).WithError(err).Error("admin delete sessions failed")
 			internalError(w, "failed to delete sessions")
 			return
 		}
 	}
-	writeOK(w, map[string]interface{}{"deleted": userID})
+	action := service.AuditActionDeleteUser
+	if hard {
+		action = service.AuditActionHardDeleteUser
+	}
+	h.recordAudit(r, action, userID, "")
+	writeOK(w, map[string]interface{}{"deleted": userID, "hard": hard})
 }
 
-// SearchSessions 处理 GET /admin/api/sessions?user_id=&q=&limit=。
+// SearchSessions 处理 GET /admin/api/sessions?user_id=&q=&limit=&cursor=。
 func (h *AdminHandler) SearchSessions(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(r) {
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid admin token")
@@ -196,14 +249,15 @@ func (h *AdminHandler) SearchSessions(w http.ResponseWriter, r *http.Request) {
 		UserID: q.Get("user_id"),
 		Query:  strings.TrimSpace(q.Get("q")),
 		Limit:  limit,
+		Cursor: q.Get("cursor"),
 	}
-	list, err := h.sessions.SearchSessions(r.Context(), tenant, opts)
+	list, next, err := h.sessions.SearchSessions(r.Context(), tenant, opts)
 	if err != nil {
 		logger.FromContext(r.Context()).WithError(err).Error("admin search sessions failed")
 		internalError(w, "failed to search sessions")
 		return
 	}
-	writeOK(w, map[string]interface{}{"tenant_id": tenant, "sessions": list, "count": len(list)})
+	writeOK(w, map[string]interface{}{"tenant_id": tenant, "sessions": list, "count": len(list), "next_cursor": next})
 }
 
 // GetSession 处理 GET /admin/api/sessions/{session_id}。
@@ -260,12 +314,13 @@ func (h *AdminHandler) ExportSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, CodeNotFound, "session not found")
 		return
 	}
+	h.recordAudit(r, service.AuditActionExportSession, sessionID, "")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=session_"+sessionID+".json")
 	_ = json.NewEncoder(w).Encode(sum)
 }
 
-// DeleteSession 处理 DELETE /admin/api/sessions/{session_id}。
+// DeleteSession 处理 DELETE /admin/api/sessions/{session_id}?hard=。默认软删除，hard=true 为硬删除。
 func (h *AdminHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(r) {
 		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid admin token")
@@ -281,10 +336,47 @@ func (h *AdminHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, CodeNotFound, "session store not configured")
 		return
 	}
-	if err := h.sessions.DeleteSession(r.Context(), tenant, sessionID); err != nil {
+	hard := r.URL.Query().Get("hard") == "true"
+	var err error
+	if hard {
+		err = h.sessions.PurgeSession(r.Context(), tenant, sessionID)
+	} else {
+		err = h.sessions.DeleteSession(r.Context(), tenant, sessionID)
+	}
+	if err != nil {
 		logger.FromContext(r.Context()).WithError(err).Error("admin delete session failed")
 		internalError(w, "failed to delete session")
 		return
 	}
-	writeOK(w, map[string]interface{}{"deleted": sessionID})
+	action := service.AuditActionDeleteSession
+	if hard {
+		action = service.AuditActionHardDelete
+	}
+	h.recordAudit(r, action, sessionID, "")
+	writeOK(w, map[string]interface{}{"deleted": sessionID, "hard": hard})
+}
+
+// ListAudit 处理 GET /admin/api/audit?limit=，返回管理操作审计日志（最新在前）。
+func (h *AdminHandler) ListAudit(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(r) {
+		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid admin token")
+		return
+	}
+	tenant := h.tenant(r)
+	if tenant == "" {
+		badRequest(w, CodeMissingTenant, "missing X-Tenant-ID header")
+		return
+	}
+	if h.audit == nil {
+		writeError(w, http.StatusNotFound, CodeNotFound, "audit store not configured")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	entries, err := h.audit.List(r.Context(), tenant, limit)
+	if err != nil {
+		logger.FromContext(r.Context()).WithError(err).Error("admin list audit failed")
+		internalError(w, "failed to list audit")
+		return
+	}
+	writeOK(w, map[string]interface{}{"tenant_id": tenant, "audit": entries, "count": len(entries)})
 }

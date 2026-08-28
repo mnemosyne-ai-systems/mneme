@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,18 +17,42 @@ import (
 	"github.com/mnemosyne/mneme/pkg/storage"
 )
 
+// decodeCursor 解析分页游标（偏移量）。
+func decodeCursor(s string) int {
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// encodeCursor 编码下一页游标；无下一页时返回空串。
+func encodeCursor(offset int) string {
+	if offset <= 0 {
+		return ""
+	}
+	return strconv.Itoa(offset)
+}
+
 // ProfileStore 负责画像的热存储（Redis）与冷存储（ClickHouse）。
 type ProfileStore interface {
 	SaveProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) (int64, error)
 	GetProfile(ctx context.Context, tenant, entityType, entityID string) (map[string]string, error)
-	// ListProfiles 列出某租户下某类型实体的画像（用于管理后台浏览）。
-	ListProfiles(ctx context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, error)
-	// DeleteProfile 删除某实体画像（数据治理）。仅清理热存储；冷存储 ClickHouse 由 TTL/归档策略处理。
+	// ListProfiles 列出某租户下某类型实体的画像（用于管理后台浏览），返回结果与下一页游标。
+	ListProfiles(ctx context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, string, error)
+	// DeleteProfile 软删除某实体画像（数据治理，可恢复）。仅标记热存储 Hash 的 _deleted 字段。
 	DeleteProfile(ctx context.Context, tenant, entityType, entityID string) error
+	// PurgeProfile 硬删除（不可恢复），真正清理热存储。
+	PurgeProfile(ctx context.Context, tenant, entityType, entityID string) error
 }
 
 // ListOptions 列表查询选项。
 type ListOptions struct {
+	// Cursor 分页游标（由上一页返回的 next_cursor），空表示从首页。
+	Cursor string
 	// Limit 返回条数上限，<=0 表示使用默认（100）。
 	Limit int
 }
@@ -107,26 +133,42 @@ func (s *RedisProfileStore) GetProfile(ctx context.Context, tenant, entityType, 
 	if err != nil {
 		return nil, fmt.Errorf("profile store: hgetall: %w", err)
 	}
+	if len(res) == 0 || res[cache.DeletedField] == "1" {
+		return nil, nil
+	}
 	return res, nil
 }
 
-// ListProfiles 扫描该租户下的实体 Hash，返回画像视图（用于管理后台）。
-func (s *RedisProfileStore) ListProfiles(ctx context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, error) {
+// ListProfiles 扫描该租户下的实体 Hash，返回画像视图与下一页游标（用于管理后台分页）。
+func (s *RedisProfileStore) ListProfiles(ctx context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, string, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	iter := s.client.Scan(ctx, 0, cache.MemoryKey(tenant, entityType, "*"), 0).Iterator()
-	var out []*EntityProfile
+	var keys []string
 	for iter.Next(ctx) {
-		if len(out) >= limit {
-			break
-		}
-		res, err := s.client.HGetAll(ctx, iter.Val()).Result()
+		keys = append(keys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		return nil, "", fmt.Errorf("profile store: scan: %w", err)
+	}
+	sort.Strings(keys)
+	offset := decodeCursor(opts.Cursor)
+	if offset > len(keys) {
+		offset = len(keys)
+	}
+	end := offset + limit
+	if end > len(keys) {
+		end = len(keys)
+	}
+	out := make([]*EntityProfile, 0, end-offset)
+	for _, key := range keys[offset:end] {
+		res, err := s.client.HGetAll(ctx, key).Result()
 		if err != nil {
-			return nil, fmt.Errorf("profile store: hgetall: %w", err)
+			return nil, "", fmt.Errorf("profile store: hgetall: %w", err)
 		}
-		if len(res) == 0 {
+		if len(res) == 0 || res[cache.DeletedField] == "1" {
 			continue
 		}
 		cp := make(map[string]string, len(res))
@@ -140,14 +182,24 @@ func (s *RedisProfileStore) ListProfiles(ctx context.Context, tenant, entityType
 			Profile:    cp,
 		})
 	}
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("profile store: scan: %w", err)
+	next := ""
+	if end < len(keys) {
+		next = encodeCursor(end)
 	}
-	return out, nil
+	return out, next, nil
 }
 
-// DeleteProfile 删除实体画像的热存储（Hash + 版本号）。
+// DeleteProfile 软删除：标记热存储 Hash 的 _deleted 字段（可恢复）。
 func (s *RedisProfileStore) DeleteProfile(ctx context.Context, tenant, entityType, entityID string) error {
+	key := cache.MemoryKey(tenant, entityType, entityID)
+	if err := s.client.HSet(ctx, key, cache.DeletedField, "1", "_updated_at", time.Now().UTC().Format(time.RFC3339)).Err(); err != nil {
+		return fmt.Errorf("profile store: soft delete: %w", err)
+	}
+	return nil
+}
+
+// PurgeProfile 硬删除：真正清理热存储 Hash 与版本号（不可恢复）。
+func (s *RedisProfileStore) PurgeProfile(ctx context.Context, tenant, entityType, entityID string) error {
 	key := cache.MemoryKey(tenant, entityType, entityID)
 	verKey := cache.MemoryVersionKey(tenant, entityType, entityID)
 	if err := s.client.Del(ctx, key, verKey).Err(); err != nil {
@@ -217,8 +269,8 @@ func (s *MemoryProfileStore) GetProfile(_ context.Context, tenant, entityType, e
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p, ok := s.profiles[key]
-	if !ok {
-		return map[string]string{}, nil
+	if !ok || p[cache.DeletedField] == "1" {
+		return nil, nil
 	}
 	cp := make(map[string]string, len(p))
 	for k, v := range p {
@@ -227,8 +279,8 @@ func (s *MemoryProfileStore) GetProfile(_ context.Context, tenant, entityType, e
 	return cp, nil
 }
 
-// ListProfiles 返回内存中该租户下该类型实体的画像。
-func (s *MemoryProfileStore) ListProfiles(_ context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, error) {
+// ListProfiles 返回内存中该租户下该类型实体的画像，并给出下一页游标。
+func (s *MemoryProfileStore) ListProfiles(_ context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, string, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
@@ -236,13 +288,26 @@ func (s *MemoryProfileStore) ListProfiles(_ context.Context, tenant, entityType 
 	prefix := cache.MemoryKey(tenant, entityType, "")
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var out []*EntityProfile
-	for key, p := range s.profiles {
-		if !strings.HasPrefix(key, prefix) {
-			continue
+	var keys []string
+	for key := range s.profiles {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
 		}
-		if len(out) >= limit {
-			break
+	}
+	sort.Strings(keys)
+	offset := decodeCursor(opts.Cursor)
+	if offset > len(keys) {
+		offset = len(keys)
+	}
+	end := offset + limit
+	if end > len(keys) {
+		end = len(keys)
+	}
+	out := make([]*EntityProfile, 0, end-offset)
+	for _, key := range keys[offset:end] {
+		p := s.profiles[key]
+		if p[cache.DeletedField] == "1" {
+			continue
 		}
 		entityID := strings.TrimPrefix(key, prefix)
 		cp := make(map[string]string, len(p))
@@ -256,11 +321,27 @@ func (s *MemoryProfileStore) ListProfiles(_ context.Context, tenant, entityType 
 			Profile:    cp,
 		})
 	}
-	return out, nil
+	next := ""
+	if end < len(keys) {
+		next = encodeCursor(end)
+	}
+	return out, next, nil
 }
 
-// DeleteProfile 从内存中删除实体画像。
+// DeleteProfile 软删除：标记 _deleted（可恢复）。
 func (s *MemoryProfileStore) DeleteProfile(_ context.Context, tenant, entityType, entityID string) error {
+	key := cache.MemoryKey(tenant, entityType, entityID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.profiles[key]; ok {
+		p[cache.DeletedField] = "1"
+		p["_updated_at"] = time.Now().UTC().Format(time.RFC3339)
+	}
+	return nil
+}
+
+// PurgeProfile 硬删除：真正清理内存中的画像。
+func (s *MemoryProfileStore) PurgeProfile(_ context.Context, tenant, entityType, entityID string) error {
 	key := cache.MemoryKey(tenant, entityType, entityID)
 	s.mu.Lock()
 	defer s.mu.Unlock()

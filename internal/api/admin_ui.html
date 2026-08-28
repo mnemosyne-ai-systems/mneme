@@ -39,6 +39,8 @@
   <div class="toolbar tabs">
     <button id="tab-users" class="active" onclick="switchTab('users')">用户与画像</button>
     <button id="tab-sessions" onclick="switchTab('sessions')">会话总结检索</button>
+    <button id="tab-audit" onclick="switchTab('audit')">审计日志</button>
+    <label class="muted" style="margin-left:auto"><input type="checkbox" id="hard"/> 硬删除（不可恢复，绕过软删除）</label>
   </div>
 
   <main>
@@ -74,6 +76,7 @@
         <span class="muted">点击会话查看详情，可删除/导出</span>
       </div>
       <div id="sessions-list"></div>
+      <div class="toolbar" id="sessions-pager"></div>
       <div id="session-detail" class="hidden">
         <div class="card">
           <div class="row" style="justify-content:space-between">
@@ -86,6 +89,15 @@
           <pre id="sd-summary"></pre>
         </div>
       </div>
+    </section>
+
+    <!-- 审计日志 -->
+    <section id="panel-audit" class="hidden">
+      <div class="toolbar">
+        <button class="primary" onclick="loadAudit()">刷新审计日志</button>
+        <span class="muted">记录管理后台的删除/导出等变更操作</span>
+      </div>
+      <div id="audit-list"></div>
     </section>
   </main>
 
@@ -109,21 +121,34 @@
   function switchTab(name){
     document.getElementById('tab-users').classList.toggle('active', name==='users');
     document.getElementById('tab-sessions').classList.toggle('active', name==='sessions');
+    document.getElementById('tab-audit').classList.toggle('active', name==='audit');
     document.getElementById('panel-users').classList.toggle('hidden', name!=='users');
     document.getElementById('panel-sessions').classList.toggle('hidden', name!=='sessions');
+    document.getElementById('panel-audit').classList.toggle('hidden', name!=='audit');
+    if (name==='audit') loadAudit();
   }
 
-  async function loadUsers(){
+  let usersCursor = '';
+  let sessCursor = '';
+  const hardQS = () => document.getElementById('hard').checked ? '?hard=true' : '';
+
+  async function loadUsers(cursor){
     setStatus('加载中…');
+    usersCursor = cursor || '';
+    const qs = new URLSearchParams();
+    if (usersCursor) qs.set('cursor', usersCursor);
     try {
-      const d = await api('/users');
+      const d = await api('/users?' + qs.toString());
       const box = document.getElementById('users-list');
       if (!d.users.length) { box.innerHTML = '<p class="muted">无用户</p>'; return; }
       box.innerHTML = '<table><tr><th>user_id</th><th>画像字段数</th><th></th></tr>' +
         d.users.map(u => `<tr><td><a class="link" onclick="showUser('${esc(u.user_id)}')">${esc(u.user_id)}</a></td>` +
           `<td>${Object.keys(u.profile||{}).length}</td>` +
           `<td><button class="danger" onclick="delUser('${esc(u.user_id)}')">删除</button></td></tr>`).join('') + '</table>';
-      setStatus('共 ' + d.users.length + ' 个用户');
+      const pager = '<button onclick="loadUsers()">首页</button>' +
+        (d.next_cursor ? ' <button onclick="loadUsers(\'' + esc(d.next_cursor) + '\')">下一页</button>' : '');
+      document.getElementById('users-list').insertAdjacentHTML('beforeend', '<div class="toolbar">' + pager + '</div>');
+      setStatus('本页 ' + d.users.length + ' 个用户' + (d.next_cursor ? '（还有更多）' : ''));
     } catch(e){ setStatus('错误: ' + e.message); }
   }
 
@@ -145,18 +170,20 @@
   }
 
   async function delUser(id){
-    if (!confirm('确认删除用户 ' + id + ' 的画像及其全部会话？')) return;
-    try { await api('/users/' + encodeURIComponent(id), { method:'DELETE' }); setStatus('已删除 ' + id); loadUsers(); document.getElementById('user-detail').classList.add('hidden'); }
+    if (!confirm('确认删除用户 ' + id + ' 的画像及其全部会话？' + (document.getElementById('hard').checked ? '（硬删除，不可恢复）' : '（软删除，可恢复）'))) return;
+    try { await api('/users/' + encodeURIComponent(id) + hardQS(), { method:'DELETE' }); setStatus('已删除 ' + id); loadUsers(); document.getElementById('user-detail').classList.add('hidden'); }
     catch(e){ setStatus('删除失败: ' + e.message); }
   }
 
-  async function searchSessions(){
+  async function searchSessions(cursor){
     setStatus('检索中…');
+    sessCursor = cursor || '';
     const u = document.getElementById('s-user').value.trim();
     const q = document.getElementById('s-q').value.trim();
     const l = document.getElementById('s-limit').value.trim();
     const qs = new URLSearchParams();
     if (u) qs.set('user_id', u); if (q) qs.set('q', q); if (l) qs.set('limit', l);
+    if (sessCursor) qs.set('cursor', sessCursor);
     try {
       const d = await api('/sessions?' + qs.toString());
       const box = document.getElementById('sessions-list');
@@ -166,7 +193,10 @@
             <a class="link" onclick="showSession('${esc(s.session_id)}')">${esc(s.session_id)}</a>
             <span class="muted">${esc(s.message_count)} 条 · ${esc(s.user_id)}</span></div>
           <div class="muted">${(s.summary||'').slice(0,140)}</div></div>`).join('');
-      setStatus('共 ' + d.sessions.length + ' 条');
+      const pager = '<button onclick="searchSessions()">首页</button>' +
+        (d.next_cursor ? ' <button onclick="searchSessions(\'' + esc(d.next_cursor) + '\')">下一页</button>' : '');
+      document.getElementById('sessions-pager').innerHTML = pager;
+      setStatus('本页 ' + d.sessions.length + ' 条' + (d.next_cursor ? '（按时间倒序，还有更多）' : '（按时间倒序）'));
     } catch(e){ setStatus('错误: ' + e.message); }
   }
 
@@ -182,9 +212,24 @@
   }
 
   async function delSession(id){
-    if (!confirm('确认删除会话 ' + id + '？')) return;
-    try { await api('/sessions/' + encodeURIComponent(id), { method:'DELETE' }); setStatus('已删除 ' + id); document.getElementById('session-detail').classList.add('hidden'); searchSessions(); }
+    if (!confirm('确认删除会话 ' + id + '？' + (document.getElementById('hard').checked ? '（硬删除，不可恢复）' : '（软删除，可恢复）'))) return;
+    try { await api('/sessions/' + encodeURIComponent(id) + hardQS(), { method:'DELETE' }); setStatus('已删除 ' + id); document.getElementById('session-detail').classList.add('hidden'); searchSessions(); }
     catch(e){ setStatus('删除失败: ' + e.message); }
+  }
+
+  async function loadAudit(){
+    try {
+      const d = await api('/audit');
+      const box = document.getElementById('audit-list');
+      const rows = (d.audit||[]).map(e => `<tr>
+          <td class="muted">${esc(e.at)}</td>
+          <td>${esc(e.actor)}</td>
+          <td>${esc(e.action)}</td>
+          <td>${esc(e.target)}</td>
+          <td class="muted">${esc(e.detail)}</td></tr>`).join('');
+      box.innerHTML = '<table><tr><th>时间</th><th>操作人</th><th>动作</th><th>目标</th><th>备注</th></tr>' +
+        (rows || '<tr><td colspan="5" class="muted">无记录</td></tr>') + '</table>';
+    } catch(e){ setStatus('审计日志加载失败: ' + e.message); }
   }
 
   const tokenQS = () => { const tk=document.getElementById('token').value.trim(); return tk?('&__t='+encodeURIComponent(tk)):''; };

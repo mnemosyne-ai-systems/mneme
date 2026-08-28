@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -439,11 +441,15 @@ func (s stubUserStore) SaveProfile(_ context.Context, _, _, _ string, _ map[stri
 	return 1, nil
 }
 
-func (s stubUserStore) ListProfiles(_ context.Context, _, _ string, _ service.ListOptions) ([]*service.EntityProfile, error) {
-	return nil, nil
+func (s stubUserStore) ListProfiles(_ context.Context, _, _ string, _ service.ListOptions) ([]*service.EntityProfile, string, error) {
+	return nil, "", nil
 }
 
 func (s stubUserStore) DeleteProfile(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
+func (s stubUserStore) PurgeProfile(_ context.Context, _, _, _ string) error {
 	return nil
 }
 
@@ -455,15 +461,23 @@ func (s stubUserStore) SaveSummary(_ context.Context, _ *models.SessionSummary) 
 	return 1, nil
 }
 
-func (s stubUserStore) SearchSessions(_ context.Context, _ string, _ service.SessionSearchOptions) ([]*models.SessionSummary, error) {
-	return s.sessions, nil
+func (s stubUserStore) SearchSessions(_ context.Context, _ string, _ service.SessionSearchOptions) ([]*models.SessionSummary, string, error) {
+	return s.sessions, "", nil
 }
 
 func (s stubUserStore) DeleteSession(_ context.Context, _, _ string) error {
 	return nil
 }
 
+func (s stubUserStore) PurgeSession(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (s stubUserStore) DeleteSessionsByUser(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (s stubUserStore) PurgeSessionsByUser(_ context.Context, _, _ string) error {
 	return nil
 }
 
@@ -556,7 +570,7 @@ func TestAdminUserAndSessionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := newAdminServer(NewAdminHandler(profiles, sessions, ""))
+	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), ""))
 
 	// 列表用户
 	rr := doJSON(t, h, http.MethodGet, "/users", "", map[string]string{HeaderTenantID: "t1"})
@@ -614,7 +628,7 @@ func TestAdminUserAndSessionLifecycle(t *testing.T) {
 func TestAdminTokenGuard(t *testing.T) {
 	profiles := service.NewMemoryProfileStore(nil)
 	sessions := service.NewMemorySessionSummaryStore(nil)
-	h := newAdminServer(NewAdminHandler(profiles, sessions, "secret"))
+	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), "secret"))
 
 	// 无令牌 → 401
 	rr := doJSON(t, h, http.MethodGet, "/users", "", map[string]string{HeaderTenantID: "t1"})
@@ -631,5 +645,103 @@ func TestAdminTokenGuard(t *testing.T) {
 	rr = doJSON(t, h, http.MethodGet, "/users/u1/export?token=secret", "", map[string]string{HeaderTenantID: "t1"})
 	if rr.Code != http.StatusOK {
 		t.Errorf("export with query token status = %d, want 200", rr.Code)
+	}
+}
+
+func TestAdminCursorSoftDeleteAndAudit(t *testing.T) {
+	ctx := context.Background()
+	profiles := service.NewMemoryProfileStore(nil)
+	sessions := service.NewMemorySessionSummaryStore(nil)
+	audit := service.NewMemoryAuditStore()
+	h := newAdminServer(NewAdminHandler(profiles, sessions, audit, ""))
+
+	// 创建 3 个会话，结束时间递增（用于验证按时间倒序）。
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		s := &models.SessionSummary{
+			SessionID: fmt.Sprintf("s%d", i),
+			TenantID:  "t1",
+			UserID:    "u1",
+			Summary:   fmt.Sprintf("session %d", i),
+			StartedAt: base.Add(time.Duration(i) * time.Hour),
+			EndedAt:   base.Add(time.Duration(i+1) * time.Hour),
+		}
+		if _, err := sessions.SaveSummary(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 检索分页：limit=2 应返回 next_cursor。
+	rr := doJSON(t, h, http.MethodGet, "/sessions?user_id=u1&limit=2", "", map[string]string{HeaderTenantID: "t1"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("search status = %d", rr.Code)
+	}
+	var r models.APIResponse
+	_ = json.Unmarshal(rr.Body.Bytes(), &r)
+	d := r.Data.(map[string]interface{})
+	page := d["sessions"].([]interface{})
+	if len(page) != 2 {
+		t.Fatalf("page size = %d, want 2", len(page))
+	}
+	if d["next_cursor"] == "" || d["next_cursor"] == nil {
+		t.Error("expected non-empty next_cursor")
+	}
+	// 按时间倒序：第一条应为 s2（结束时间最晚）。
+	first := page[0].(map[string]interface{})
+	if first["session_id"] != "s2" {
+		t.Errorf("first session = %v, want s2 (newest)", first["session_id"])
+	}
+	// 翻页取剩余 1 条。
+	rr = doJSON(t, h, http.MethodGet, "/sessions?user_id=u1&limit=2&cursor="+d["next_cursor"].(string), "", map[string]string{HeaderTenantID: "t1"})
+	_ = json.Unmarshal(rr.Body.Bytes(), &r)
+	if len(r.Data.(map[string]interface{})["sessions"].([]interface{})) != 1 {
+		t.Error("second page should have 1 session")
+	}
+
+	// 软删除单个会话 → 查询 404，且审计日志记录。
+	rr = doJSON(t, h, http.MethodDelete, "/sessions/s1", "", map[string]string{HeaderTenantID: "t1"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete status = %d", rr.Code)
+	}
+	rr = doJSON(t, h, http.MethodGet, "/sessions/s1", "", map[string]string{HeaderTenantID: "t1"})
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("soft-deleted session status = %d, want 404", rr.Code)
+	}
+	// 用户聚合视图不应再包含已软删除的 s1。
+	rr = doJSON(t, h, http.MethodGet, "/users/u1", "", map[string]string{HeaderTenantID: "t1"})
+	_ = json.Unmarshal(rr.Body.Bytes(), &r)
+	remaining := r.Data.(map[string]interface{})["sessions"].([]interface{})
+	if len(remaining) != 2 {
+		t.Errorf("remaining sessions = %d, want 2 (s1 soft-deleted)", len(remaining))
+	}
+
+	// 审计日志：应至少包含一条 delete_session。
+	rr = doJSON(t, h, http.MethodGet, "/audit", "", map[string]string{HeaderTenantID: "t1"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("audit status = %d", rr.Code)
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &r)
+	entries := r.Data.(map[string]interface{})["audit"].([]interface{})
+	if len(entries) == 0 {
+		t.Fatal("expected non-empty audit log")
+	}
+	found := false
+	for _, e := range entries {
+		if e.(map[string]interface{})["action"] == service.AuditActionDeleteSession {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("audit log missing delete_session action")
+	}
+
+	// 硬删除用户：其剩余会话彻底清除（404）。
+	rr = doJSON(t, h, http.MethodDelete, "/users/u1?hard=true", "", map[string]string{HeaderTenantID: "t1"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("hard delete user status = %d", rr.Code)
+	}
+	rr = doJSON(t, h, http.MethodGet, "/sessions/s2", "", map[string]string{HeaderTenantID: "t1"})
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("hard-deleted session status = %d, want 404", rr.Code)
 	}
 }

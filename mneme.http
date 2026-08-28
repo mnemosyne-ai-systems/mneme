@@ -74,12 +74,24 @@ GET http://localhost:8080/openapi.json
 ### 后台管理界面（用户/画像浏览、会话检索、数据治理；需 admin.enabled=true）
 GET http://localhost:8080/admin
 
-### 后台：列出用户与画像
-GET http://localhost:8080/admin/api/users
+### 后台：列出用户与画像（游标分页：传入上一页返回的 next_cursor）
+GET http://localhost:8080/admin/api/users?limit=20
 X-Tenant-ID: t1
 
-### 后台：检索会话总结
-GET http://localhost:8080/admin/api/sessions?user_id=u1&q=部署
+### 后台：检索会话总结（按时间倒序，支持游标翻页）
+GET http://localhost:8080/admin/api/sessions?user_id=u1&q=部署&limit=20
+X-Tenant-ID: t1
+
+### 后台：查看审计日志（删除/导出等变更操作）
+GET http://localhost:8080/admin/api/audit?limit=50
+X-Tenant-ID: t1
+
+### 后台：软删除单个会话（可恢复）
+DELETE http://localhost:8080/admin/api/sessions/sess-demo-001
+X-Tenant-ID: t1
+
+### 后台：硬删除单个会话（不可恢复，彻底清理）
+DELETE http://localhost:8080/admin/api/sessions/sess-demo-001?hard=true
 X-Tenant-ID: t1
 
 ### 指标（Prometheus 格式）

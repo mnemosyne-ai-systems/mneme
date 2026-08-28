@@ -165,17 +165,25 @@ admin:
 开启后提供：
 
 - 页面入口 `GET /admin`（内嵌 HTML，无需独立前端构建）
-- 用户与画像浏览：`GET /admin/api/users`、`GET /admin/api/users/{user_id}`
-- 会话总结检索：`GET /admin/api/sessions?user_id=&q=&limit=`
+- 用户与画像浏览：`GET /admin/api/users?limit=&cursor=`、`GET /admin/api/users/{user_id}`
+- 会话总结检索：`GET /admin/api/sessions?user_id=&q=&limit=&cursor=`（按结束时间倒序）
 - 数据治理：
-  - 删除用户及其全部会话：`DELETE /admin/api/users/{user_id}`
-  - 删除单个会话：`DELETE /admin/api/sessions/{session_id}`
+  - 软删除用户及其全部会话：`DELETE /admin/api/users/{user_id}`（可恢复，标记 `_deleted`）
+  - 硬删除用户及其全部会话：`DELETE /admin/api/users/{user_id}?hard=true`（不可恢复，彻底清理）
+  - 软删除单个会话：`DELETE /admin/api/sessions/{session_id}`
+  - 硬删除单个会话：`DELETE /admin/api/sessions/{session_id}?hard=true`
   - 导出用户（画像 + 会话 JSON）：`GET /admin/api/users/{user_id}/export`
   - 导出单个会话（JSON）：`GET /admin/api/sessions/{session_id}/export`
+- 审计日志：`GET /admin/api/audit?limit=`（记录删除/导出等变更操作，最新在前）
+
+列表与检索支持**游标分页**：请求返回 `next_cursor`，将其作为下一页的 `cursor` 参数即可翻页。
+会话检索与用户聚合视图中的会话列表均**按结束时间倒序**（最近的在前）。
 
 鉴权说明：仅做薄保护——若配置了 `token`，所有 `/admin/api/*` 需带
 `Authorization: Bearer <token>`（导出类 GET 链接也支持 `?token=` / `?__t=` 携带）。
 生产环境建议将 `/admin` 置于网关或反向代理之后做真正的访问控制。
 
-后端支撑方法：`ProfileStore.ListProfiles/DeleteProfile`、`SessionSummaryStore.SearchSessions/
-DeleteSession/DeleteSessionsByUser`（Redis 与内存双实现）。
+后端支撑方法：`ProfileStore.ListProfiles/DeleteProfile/PurgeProfile`、`SessionSummaryStore.
+SearchSessions/DeleteSession/PurgeSession/DeleteSessionsByUser/PurgeSessionsByUser`，
+以及 `AuditStore.Append/List`（Redis 与内存双实现）。软删除通过热存储 Hash 的 `_deleted`
+标记实现，读取时自动跳过；冷存储 ClickHouse 仍保留原始快照（由 TTL/归档策略处理）。
