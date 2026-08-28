@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -13,6 +14,9 @@ import (
 
 // maxBodyBytes 限制单次请求体大小（4MB）。
 const maxBodyBytes = 4 << 20
+
+// maxBatchMessages 限制批量请求的消息数。
+const maxBatchMessages = 1000
 
 // HistoryHandler 管道一 HTTP 接入。
 type HistoryHandler struct {
@@ -59,6 +63,11 @@ func (r historyRequest) toModel(tenant string) *models.HistoryMessage {
 	}
 }
 
+// historyBatchRequest 是 POST /api/v1/history/batch 的请求体。
+type historyBatchRequest struct {
+	Messages []historyRequest `json:"messages"`
+}
+
 // Create 处理 POST /api/v1/history，异步投递后立即返回 202。
 func (h *HistoryHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req historyRequest
@@ -88,6 +97,51 @@ func (h *HistoryHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeAccepted(w, map[string]string{"message_id": msg.MessageID})
+}
+
+// CreateBatch 处理 POST /api/v1/history/batch，整批校验后原子投递。
+// 租户解析规则与单条接口一致：X-Tenant-ID 头优先，其次各消息自带 tenant_id。
+func (h *HistoryHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
+	var req historyBatchRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		badRequest(w, CodeInvalidJSON, "invalid json body: "+err.Error())
+		return
+	}
+	if len(req.Messages) == 0 {
+		badRequest(w, CodeMissingField, "messages must not be empty")
+		return
+	}
+	if len(req.Messages) > maxBatchMessages {
+		badRequest(w, CodeBadRequest, fmt.Sprintf("messages count %d exceeds limit %d", len(req.Messages), maxBatchMessages))
+		return
+	}
+
+	headerTenant := tenantFrom(r)
+	msgs := make([]*models.HistoryMessage, 0, len(req.Messages))
+	for i := range req.Messages {
+		tenant := headerTenant
+		if tenant == "" {
+			tenant = req.Messages[i].TenantID
+		}
+		if tenant == "" {
+			badRequest(w, CodeMissingTenant,
+				fmt.Sprintf("messages[%d]: missing tenant: set X-Tenant-ID header or tenant_id field", i))
+			return
+		}
+		msgs = append(msgs, req.Messages[i].toModel(tenant))
+	}
+
+	if err := h.ingest.PublishHistoryBatch(r.Context(), msgs); err != nil {
+		if ve, ok := err.(*models.ValidationError); ok {
+			badRequest(w, CodeMissingField, ve.Error())
+			return
+		}
+		logger.FromContext(r.Context()).WithError(err).Error("publish history batch failed")
+		writeError(w, http.StatusServiceUnavailable, CodeUpstream, "failed to publish messages")
+		return
+	}
+
+	writeAccepted(w, map[string]int{"accepted": len(msgs)})
 }
 
 // decodeJSON 解析请求体，限制大小并禁止未知字段以外的宽松处理。

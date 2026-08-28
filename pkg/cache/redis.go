@@ -60,3 +60,15 @@ func BloomKey(pipeline, tenant string) string {
 func MemoryVersionKey(tenant, entityType, entityID string) string {
 	return fmt.Sprintf("%s:memver:%s:%s:%s", KeyPrefix, tenant, entityType, entityID)
 }
+
+// SessionKey 返回会话总结的 Redis Hash Key：
+// mnemosyne:mneme:session:{tenant}:{session_id}
+func SessionKey(tenant, sessionID string) string {
+	return fmt.Sprintf("%s:session:%s:%s", KeyPrefix, tenant, sessionID)
+}
+
+// SessionVersionKey 返回会话总结版本号计数器 Key（独立前缀，避免与 SessionKey 的 SCAN 模式冲突）：
+// mnemosyne:mneme:sessver:{tenant}:{session_id}
+func SessionVersionKey(tenant, sessionID string) string {
+	return fmt.Sprintf("%s:sessver:%s:%s", KeyPrefix, tenant, sessionID)
+}

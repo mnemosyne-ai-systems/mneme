@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,24 @@ import (
 type ProfileStore interface {
 	SaveProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) (int64, error)
 	GetProfile(ctx context.Context, tenant, entityType, entityID string) (map[string]string, error)
+	// ListProfiles 列出某租户下某类型实体的画像（用于管理后台浏览）。
+	ListProfiles(ctx context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, error)
+	// DeleteProfile 删除某实体画像（数据治理）。仅清理热存储；冷存储 ClickHouse 由 TTL/归档策略处理。
+	DeleteProfile(ctx context.Context, tenant, entityType, entityID string) error
+}
+
+// ListOptions 列表查询选项。
+type ListOptions struct {
+	// Limit 返回条数上限，<=0 表示使用默认（100）。
+	Limit int
+}
+
+// EntityProfile 管理后台列出的实体画像视图。
+type EntityProfile struct {
+	TenantID   string
+	EntityType string
+	EntityID   string
+	Profile    map[string]string
 }
 
 // RedisProfileStore 使用 Redis Hash 保存画像，并把带版本号的快照写入 ClickHouse。
@@ -91,6 +110,52 @@ func (s *RedisProfileStore) GetProfile(ctx context.Context, tenant, entityType, 
 	return res, nil
 }
 
+// ListProfiles 扫描该租户下的实体 Hash，返回画像视图（用于管理后台）。
+func (s *RedisProfileStore) ListProfiles(ctx context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	iter := s.client.Scan(ctx, 0, cache.MemoryKey(tenant, entityType, "*"), 0).Iterator()
+	var out []*EntityProfile
+	for iter.Next(ctx) {
+		if len(out) >= limit {
+			break
+		}
+		res, err := s.client.HGetAll(ctx, iter.Val()).Result()
+		if err != nil {
+			return nil, fmt.Errorf("profile store: hgetall: %w", err)
+		}
+		if len(res) == 0 {
+			continue
+		}
+		cp := make(map[string]string, len(res))
+		for k, v := range res {
+			cp[k] = v
+		}
+		out = append(out, &EntityProfile{
+			TenantID:   tenant,
+			EntityType: entityType,
+			EntityID:   res["entity_id"],
+			Profile:    cp,
+		})
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("profile store: scan: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteProfile 删除实体画像的热存储（Hash + 版本号）。
+func (s *RedisProfileStore) DeleteProfile(ctx context.Context, tenant, entityType, entityID string) error {
+	key := cache.MemoryKey(tenant, entityType, entityID)
+	verKey := cache.MemoryVersionKey(tenant, entityType, entityID)
+	if err := s.client.Del(ctx, key, verKey).Err(); err != nil {
+		return fmt.Errorf("profile store: del: %w", err)
+	}
+	return nil
+}
+
 // MemoryProfileStore 是内存实现，用于测试与无 Redis 场景。
 type MemoryProfileStore struct {
 	mu       sync.RWMutex
@@ -160,6 +225,48 @@ func (s *MemoryProfileStore) GetProfile(_ context.Context, tenant, entityType, e
 		cp[k] = v
 	}
 	return cp, nil
+}
+
+// ListProfiles 返回内存中该租户下该类型实体的画像。
+func (s *MemoryProfileStore) ListProfiles(_ context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	prefix := cache.MemoryKey(tenant, entityType, "")
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*EntityProfile
+	for key, p := range s.profiles {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if len(out) >= limit {
+			break
+		}
+		entityID := strings.TrimPrefix(key, prefix)
+		cp := make(map[string]string, len(p))
+		for k, v := range p {
+			cp[k] = v
+		}
+		out = append(out, &EntityProfile{
+			TenantID:   tenant,
+			EntityType: entityType,
+			EntityID:   entityID,
+			Profile:    cp,
+		})
+	}
+	return out, nil
+}
+
+// DeleteProfile 从内存中删除实体画像。
+func (s *MemoryProfileStore) DeleteProfile(_ context.Context, tenant, entityType, entityID string) error {
+	key := cache.MemoryKey(tenant, entityType, entityID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.profiles, key)
+	delete(s.versions, key)
+	return nil
 }
 
 var (

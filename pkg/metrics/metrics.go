@@ -87,6 +87,12 @@ var (
 		Name: "mnemosyne_mneme_filewatcher_files_total",
 		Help: "Total files processed by the file watcher.",
 	}, []string{"ext", "result"})
+
+	// AdapterPublishTotal 文件采集器批量投递结果计数（按消息数累计）。
+	AdapterPublishTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "mnemosyne_mneme_adapter_publish_total",
+		Help: "Total history messages delivered by the adapter sink.",
+	}, []string{"result"})
 )
 
 // ObserveHTTP 记录一次 HTTP 请求。

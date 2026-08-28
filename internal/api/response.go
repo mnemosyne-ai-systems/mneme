@@ -15,6 +15,7 @@ const (
 	CodeMissingField = 40001
 	CodeInvalidJSON  = 40002
 	CodeMissingTenant = 40003
+	CodeUnauthorized  = 40100
 	CodeNotFound     = 40400
 	CodeInternal     = 50000
 	CodeUpstream     = 50200

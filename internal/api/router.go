@@ -15,7 +15,12 @@ type RouterOptions struct {
 	History        *HistoryHandler
 	Traces         *TracesHandler
 	Memory         *MemoryHandler
+	Sessions       *SessionsHandler
+	Users          *UsersHandler
 	Health         *HealthHandler
+	OpenAPI        *OpenAPIHandler
+	Admin          *AdminHandler
+	AdminUI        *AdminUIHandler
 	MetricsEnabled bool
 	TracingEnabled bool
 }
@@ -39,6 +44,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 	v1 := r.PathPrefix("/api/v1").Subrouter()
 	if opts.History != nil {
 		v1.HandleFunc("/history", opts.History.Create).Methods(http.MethodPost)
+		v1.HandleFunc("/history/batch", opts.History.CreateBatch).Methods(http.MethodPost)
 	}
 	if opts.Traces != nil {
 		v1.HandleFunc("/traces", opts.Traces.Create).Methods(http.MethodPost)
@@ -46,6 +52,26 @@ func NewRouter(opts RouterOptions) http.Handler {
 	if opts.Memory != nil {
 		v1.HandleFunc("/memory/events", opts.Memory.CreateEvent).Methods(http.MethodPost)
 		v1.HandleFunc("/memory/{entity_type}/{entity_id}", opts.Memory.GetProfile).Methods(http.MethodGet)
+	}
+	if opts.Sessions != nil {
+		v1.HandleFunc("/sessions/{session_id}", opts.Sessions.GetSummary).Methods(http.MethodGet)
+	}
+	if opts.Users != nil {
+		v1.HandleFunc("/users/{user_id}", opts.Users.GetContext).Methods(http.MethodGet)
+	}
+
+	if opts.OpenAPI != nil {
+		r.HandleFunc("/openapi.json", opts.OpenAPI.Spec).Methods(http.MethodGet)
+		r.HandleFunc("/docs", opts.OpenAPI.Docs).Methods(http.MethodGet)
+	}
+
+	if opts.Admin != nil {
+		adminSub := r.PathPrefix("/admin/api").Subrouter()
+		opts.Admin.Register(adminSub)
+	}
+	if opts.AdminUI != nil {
+		r.Handle("/admin", opts.AdminUI).Methods(http.MethodGet)
+		r.Handle("/admin/", opts.AdminUI).Methods(http.MethodGet)
 	}
 
 	r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

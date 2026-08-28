@@ -29,6 +29,9 @@ const (
 
 	insertMemorySQL = `INSERT INTO entity_memory (
         entity_id, tenant_id, entity_type, profile, _version, updated_at)`
+
+	insertSummarySQL = `INSERT INTO session_summary (
+        session_id, tenant_id, user_id, summary, message_count, started_at, ended_at, _version, updated_at)`
 )
 
 // BatchInserter 实现 storage.BatchInserter，
@@ -40,10 +43,11 @@ type BatchInserter struct {
 	interval  time.Duration
 	retries   int
 
-	mu       sync.Mutex
-	history  []*models.HistoryMessage
-	traces   []*models.TraceMessage
-	memories []*models.EntityMemory
+	mu        sync.Mutex
+	history   []*models.HistoryMessage
+	traces    []*models.TraceMessage
+	memories  []*models.EntityMemory
+	summaries []*models.SessionSummary
 
 	closed  bool
 	stopCh  chan struct{}
@@ -158,12 +162,37 @@ func (b *BatchInserter) InsertMemory(ctx context.Context, memories []*models.Ent
 	return nil
 }
 
+// InsertSessionSummary 缓冲会话总结。
+// 注意：与 InsertHistory 相同，阈值触发的直接写入失败不会自动 requeue，
+// 调用方必须自行处理 error 并重试。
+func (b *BatchInserter) InsertSessionSummary(ctx context.Context, summaries []*models.SessionSummary) error {
+	if len(summaries) == 0 {
+		return nil
+	}
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return ErrInserterClosed
+	}
+	b.summaries = append(b.summaries, summaries...)
+	var batch []*models.SessionSummary
+	if len(b.summaries) >= b.batchSize {
+		batch, b.summaries = b.summaries, nil
+	}
+	b.mu.Unlock()
+
+	if batch != nil {
+		return b.writeSessionSummary(ctx, batch)
+	}
+	return nil
+}
+
 // Flush 立即刷新所有缓冲区。写入失败的数据会被放回缓冲区，等待下次重试，
 // 避免定时 flush 失败导致数据静默丢失。
 func (b *BatchInserter) Flush() error {
 	b.mu.Lock()
-	history, traces, memories := b.history, b.traces, b.memories
-	b.history, b.traces, b.memories = nil, nil, nil
+	history, traces, memories, summaries := b.history, b.traces, b.memories, b.summaries
+	b.history, b.traces, b.memories, b.summaries = nil, nil, nil, nil
 	b.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -186,6 +215,12 @@ func (b *BatchInserter) Flush() error {
 		if err := b.writeMemory(ctx, memories); err != nil {
 			errs = append(errs, err)
 			b.requeueMemories(memories)
+		}
+	}
+	if len(summaries) > 0 {
+		if err := b.writeSessionSummary(ctx, summaries); err != nil {
+			errs = append(errs, err)
+			b.requeueSummaries(summaries)
 		}
 	}
 	return errors.Join(errs...)
@@ -224,6 +259,17 @@ func (b *BatchInserter) requeueMemories(rows []*models.EntityMemory) {
 	b.memories = append(rows, b.memories...)
 }
 
+// requeueSummaries 把写失败的数据放回缓冲区（已关闭则丢弃并告警）。
+func (b *BatchInserter) requeueSummaries(rows []*models.SessionSummary) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		logger.L().WithField("rows", len(rows)).Error("clickhouse: drop summary rows after close")
+		return
+	}
+	b.summaries = append(rows, b.summaries...)
+}
+
 // Close 停止定时器并刷新剩余数据。
 func (b *BatchInserter) Close() error {
 	b.mu.Lock()
@@ -238,8 +284,8 @@ func (b *BatchInserter) Close() error {
 	<-b.stopped
 
 	b.mu.Lock()
-	history, traces, memories := b.history, b.traces, b.memories
-	b.history, b.traces, b.memories = nil, nil, nil
+	history, traces, memories, summaries := b.history, b.traces, b.memories, b.summaries
+	b.history, b.traces, b.memories, b.summaries = nil, nil, nil, nil
 	b.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -254,6 +300,9 @@ func (b *BatchInserter) Close() error {
 	}
 	if len(memories) > 0 {
 		errs = append(errs, b.writeMemory(ctx, memories))
+	}
+	if len(summaries) > 0 {
+		errs = append(errs, b.writeSessionSummary(ctx, summaries))
 	}
 	return errors.Join(errs...)
 }
@@ -310,6 +359,25 @@ func (b *BatchInserter) writeMemory(ctx context.Context, rows []*models.EntityMe
 		for _, m := range rows {
 			if err := batch.Append(
 				m.EntityID, m.TenantID, m.EntityType, m.Profile, m.Version, m.UpdatedAt,
+			); err != nil {
+				_ = batch.Abort()
+				return err
+			}
+		}
+		return batch.Send()
+	})
+}
+
+func (b *BatchInserter) writeSessionSummary(ctx context.Context, rows []*models.SessionSummary) error {
+	return b.withRetry(ctx, storage.PipelineSession, len(rows), func(ctx context.Context) error {
+		batch, err := b.conn.PrepareBatch(ctx, insertSummarySQL)
+		if err != nil {
+			return err
+		}
+		for _, s := range rows {
+			if err := batch.Append(
+				s.SessionID, s.TenantID, s.UserID, s.Summary, s.MessageCount,
+				s.StartedAt, s.EndedAt, s.Version, s.UpdatedAt,
 			); err != nil {
 				_ = batch.Abort()
 				return err

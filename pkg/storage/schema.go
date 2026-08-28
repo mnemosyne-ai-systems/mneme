@@ -51,11 +51,26 @@ CREATE TABLE IF NOT EXISTS entity_memory (
     updated_at  DateTime
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY (tenant_id, entity_type, entity_id)`
+
+	// DDLSessionSummary 会话总结表（ReplacingMergeTree 按版本更新）。
+	DDLSessionSummary = `
+CREATE TABLE IF NOT EXISTS session_summary (
+    session_id    String,
+    tenant_id     String,
+    user_id       String,
+    summary       String,
+    message_count Int32,
+    started_at    DateTime,
+    ended_at      DateTime,
+    _version      Int64,
+    updated_at    DateTime
+) ENGINE = ReplacingMergeTree(_version)
+ORDER BY (tenant_id, session_id)`
 )
 
 // SchemaStatements 返回按顺序执行的建表语句。
 func SchemaStatements() []string {
-	return []string{DDLHistoryMessage, DDLAgentTraces, DDLEntityMemory}
+	return []string{DDLHistoryMessage, DDLAgentTraces, DDLEntityMemory, DDLSessionSummary}
 }
 
 // DatabaseDDL 返回创建数据库的语句。

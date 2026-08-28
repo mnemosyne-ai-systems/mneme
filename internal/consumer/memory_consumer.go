@@ -149,14 +149,8 @@ func (m *MemoryConsumer) RunExtraction(ctx context.Context) (int, error) {
 	var firstErr error
 	processed := 0
 	for key, events := range pending {
-		profile, mode := service.ExtractWithFallback(ctx, m.extractor, events)
-		if len(profile) == 0 {
-			continue
-		}
-		version, err := m.store.SaveProfile(ctx, key.Tenant, key.EntityType, key.EntityID, profile)
+		version, err := extractEntityProfile(ctx, m.extractor, m.store, m.opts.Topic, key, events)
 		if err != nil {
-			metrics.ConsumerErrorsTotal.WithLabelValues(m.opts.Topic, "save_profile").Inc()
-			logger.L().WithError(err).WithField("entity", key.EntityID).Error("save profile failed")
 			// 保存失败时把事件放回缓冲区，下轮重试。
 			// 与 handle 一致，放回后仍需裁剪 MaxEventsPerEntity，避免持续失败时内存无限增长。
 			m.mu.Lock()
@@ -171,16 +165,34 @@ func (m *MemoryConsumer) RunExtraction(ctx context.Context) (int, error) {
 			}
 			continue
 		}
-		processed++
-		logger.L().WithFields(map[string]interface{}{
-			"tenant":  key.Tenant,
-			"entity":  key.EntityID,
-			"mode":    mode,
-			"version": version,
-			"events":  len(events),
-		}).Info("entity profile updated")
+		if version > 0 {
+			processed++
+		}
 	}
 	return processed, firstErr
+}
+
+// extractEntityProfile 萃取并保存单个实体的画像。
+// 返回 version>0 表示成功落库；err 非 nil 表示保存失败（调用方负责把事件重新入队）。
+func extractEntityProfile(ctx context.Context, extractor service.MemoryExtractor, store service.ProfileStore, topic string, key entityKey, events []*models.MemoryEvent) (int64, error) {
+	profile, mode := service.ExtractWithFallback(ctx, extractor, events)
+	if len(profile) == 0 {
+		return 0, nil
+	}
+	version, err := store.SaveProfile(ctx, key.Tenant, key.EntityType, key.EntityID, profile)
+	if err != nil {
+		metrics.ConsumerErrorsTotal.WithLabelValues(topic, "save_profile").Inc()
+		logger.FromContext(ctx).WithError(err).WithField("entity", key.EntityID).Error("save profile failed")
+		return 0, err
+	}
+	logger.FromContext(ctx).WithFields(map[string]interface{}{
+		"tenant":  key.Tenant,
+		"entity":  key.EntityID,
+		"mode":    mode,
+		"version": version,
+		"events":  len(events),
+	}).Info("entity profile updated")
+	return version, nil
 }
 
 // Stop 优雅关闭：停止订阅并对剩余事件执行最后一次萃取。

@@ -37,6 +37,10 @@ type App struct {
 	historyConsumer *consumer.HistoryConsumer
 	tracesConsumer  *consumer.TracesConsumer
 	memoryConsumer  *consumer.MemoryConsumer
+	profileConsumer *consumer.HistoryProfileConsumer
+	sessionConsumer *consumer.SessionSummaryConsumer
+	sessionStore    service.SessionSummaryStore
+	adminHandler    *api.AdminHandler
 	archiveJob      *archiver.Job
 	fileWatcher     *filewatcher.Watcher
 
@@ -125,6 +129,14 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 	ingest := service.NewIngestService(producer, topics)
 	profileStore := service.NewRedisProfileStore(redisClient, app.inserter, 0)
+	extractor := service.NewLLMExtractor(service.LLMConfig{
+		Enabled:   cfg.Memory.LLM.Enabled,
+		Endpoint:  cfg.Memory.LLM.Endpoint,
+		Model:     cfg.Memory.LLM.Model,
+		APIKey:    cfg.Memory.LLM.APIKey,
+		Timeout:   cfg.Memory.LLM.Timeout,
+		MaxEvents: cfg.Memory.LLM.MaxEvents,
+	})
 
 	// 消费者
 	if cfg.Consumer.HistoryEnabled {
@@ -159,17 +171,40 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.cleanup(ctx)
 			return nil, err
 		}
-		extractor := service.NewLLMExtractor(service.LLMConfig{
-			Enabled:   cfg.Memory.LLM.Enabled,
-			Endpoint:  cfg.Memory.LLM.Endpoint,
-			Model:     cfg.Memory.LLM.Model,
-			APIKey:    cfg.Memory.LLM.APIKey,
-			Timeout:   cfg.Memory.LLM.Timeout,
-			MaxEvents: cfg.Memory.LLM.MaxEvents,
-		})
 		app.memoryConsumer = consumer.NewMemoryConsumer(c, extractor, profileStore, consumer.MemoryConsumerOptions{
 			Topic:           topics.Memory,
 			ExtractInterval: cfg.Consumer.MemoryExtractInterval,
+		})
+	}
+
+	// 从对话历史中萃取用户画像：复用同一个 extractor 与 profileStore，
+	// 让显式记忆事件与对话内容汇聚到同一张 entity_memory 表。
+	if cfg.Consumer.HistoryProfileEnabled {
+		c, err := messagebus.NewConsumer(busCfg)
+		if err != nil {
+			app.cleanup(ctx)
+			return nil, err
+		}
+		app.profileConsumer = consumer.NewHistoryProfileConsumer(c, extractor, profileStore, consumer.HistoryProfileConsumerOptions{
+			Topic:               topics.History,
+			ExtractInterval:     cfg.Consumer.HistoryProfileInterval,
+			MaxMessagesPerUser:  cfg.Consumer.HistoryProfileMaxMessages,
+		})
+	}
+
+	// 会话级总结：按 session_id 缓冲，定时生成"本次对话聊了什么"的自然语言概括，
+	// 与跨会话的用户画像互补。
+	if cfg.Consumer.SessionSummaryEnabled {
+		c, err := messagebus.NewConsumer(busCfg)
+		if err != nil {
+			app.cleanup(ctx)
+			return nil, err
+		}
+		app.sessionStore = service.NewRedisSessionSummaryStore(redisClient, app.inserter, 0)
+		app.sessionConsumer = consumer.NewSessionSummaryConsumer(c, extractor, app.sessionStore, consumer.SessionSummaryConsumerOptions{
+			Topic:                 topics.History,
+			SummarizeInterval:     cfg.Consumer.SessionSummaryInterval,
+			MaxMessagesPerSession: cfg.Consumer.SessionSummaryMaxMessages,
 		})
 	}
 
@@ -212,14 +247,26 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 	}
 
 	// HTTP
-	handler := api.NewRouter(api.RouterOptions{
+	routerOpts := api.RouterOptions{
 		History:        api.NewHistoryHandler(ingest),
 		Traces:         api.NewTracesHandler(ingest),
 		Memory:         api.NewMemoryHandler(ingest, profileStore),
+		Sessions:       api.NewSessionsHandler(app.sessionStore),
+		Users:          api.NewUsersHandler(profileStore, app.sessionStore),
+		OpenAPI:        api.NewOpenAPIHandler(),
 		Health:         api.NewHealthHandler(app.healthCheckers()...),
 		MetricsEnabled: cfg.Telemetry.MetricsEnabled,
 		TracingEnabled: cfg.Telemetry.TracingEnabled,
-	})
+	}
+
+	// 后台管理界面（可选，默认关闭）：用户/画像浏览、会话检索、数据治理。
+	if cfg.Admin.Enabled {
+		app.adminHandler = api.NewAdminHandler(profileStore, app.sessionStore, cfg.Admin.Token)
+		routerOpts.Admin = app.adminHandler
+		routerOpts.AdminUI = api.NewAdminUIHandler(cfg.Admin.PageTitle)
+	}
+
+	handler := api.NewRouter(routerOpts)
 	app.server = &http.Server{
 		Addr:         cfg.Server.Addr(),
 		Handler:      handler,
@@ -260,6 +307,16 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	if a.memoryConsumer != nil {
 		if err := a.memoryConsumer.Start(ctx); err != nil {
+			return err
+		}
+	}
+	if a.profileConsumer != nil {
+		if err := a.profileConsumer.Start(ctx); err != nil {
+			return err
+		}
+	}
+	if a.sessionConsumer != nil {
+		if err := a.sessionConsumer.Start(ctx); err != nil {
 			return err
 		}
 	}
@@ -321,6 +378,16 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.memoryConsumer != nil {
 		if err := a.memoryConsumer.Stop(ctx); err != nil {
 			logger.L().WithError(err).Warn("memory consumer stop error")
+		}
+	}
+	if a.profileConsumer != nil {
+		if err := a.profileConsumer.Stop(ctx); err != nil {
+			logger.L().WithError(err).Warn("history profile consumer stop error")
+		}
+	}
+	if a.sessionConsumer != nil {
+		if err := a.sessionConsumer.Stop(ctx); err != nil {
+			logger.L().WithError(err).Warn("session summary consumer stop error")
 		}
 	}
 	a.cleanup(ctx)

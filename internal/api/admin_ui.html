@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Mneme 管理后台</title>
+  <style>
+    :root { --bg:#0f172a; --panel:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --danger:#f87171; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--fg); }
+    header { padding:12px 20px; background:var(--panel); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    header h1 { font-size:16px; margin:0; }
+    input, button, select { background:#0b1220; color:var(--fg); border:1px solid #334155; border-radius:6px; padding:6px 10px; font-size:13px; }
+    button { cursor:pointer; }
+    button.primary { background:var(--accent); color:#06283d; border:none; }
+    button.danger { background:transparent; color:var(--danger); border:1px solid var(--danger); }
+    .toolbar { padding:12px 20px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .tabs button { background:transparent; border:none; padding:8px 12px; color:var(--muted); }
+    .tabs button.active { color:var(--fg); border-bottom:2px solid var(--accent); }
+    main { padding:0 20px 40px; }
+    .card { background:var(--panel); border-radius:8px; padding:12px; margin:10px 0; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .muted { color:var(--muted); font-size:12px; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#0b1220; padding:10px; border-radius:6px; max-height:320px; overflow:auto; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #334155; font-size:13px; }
+    a.link { color:var(--accent); cursor:pointer; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">Mneme 管理后台</h1>
+    <input id="tenant" placeholder="X-Tenant-ID" value="default" style="width:160px"/>
+    <input id="token" placeholder="Admin Token（可选）" style="width:200px"/>
+    <span class="muted" id="status"></span>
+  </header>
+
+  <div class="toolbar tabs">
+    <button id="tab-users" class="active" onclick="switchTab('users')">用户与画像</button>
+    <button id="tab-sessions" onclick="switchTab('sessions')">会话总结检索</button>
+  </div>
+
+  <main>
+    <!-- 用户与画像 -->
+    <section id="panel-users">
+      <div class="toolbar">
+        <button class="primary" onclick="loadUsers()">加载用户</button>
+        <span class="muted">点击用户名查看画像与全部会话，可删除/导出</span>
+      </div>
+      <div id="users-list"></div>
+      <div id="user-detail" class="hidden">
+        <div class="card">
+          <div class="row" style="justify-content:space-between">
+            <strong id="ud-id"></strong>
+            <div class="row">
+              <button class="primary" id="ud-export">导出 JSON</button>
+              <button class="danger" id="ud-delete">删除用户</button>
+            </div>
+          </div>
+          <h4>画像</h4><pre id="ud-profile"></pre>
+          <h4>会话总结</h4><div id="ud-sessions"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 会话检索 -->
+    <section id="panel-sessions" class="hidden">
+      <div class="toolbar">
+        <input id="s-user" placeholder="user_id（可选）" style="width:160px"/>
+        <input id="s-q" placeholder="关键字（session_id / 摘要）" style="width:240px"/>
+        <input id="s-limit" placeholder="limit" value="50" style="width:80px"/>
+        <button class="primary" onclick="searchSessions()">检索</button>
+        <span class="muted">点击会话查看详情，可删除/导出</span>
+      </div>
+      <div id="sessions-list"></div>
+      <div id="session-detail" class="hidden">
+        <div class="card">
+          <div class="row" style="justify-content:space-between">
+            <strong id="sd-id"></strong>
+            <div class="row">
+              <button class="primary" id="sd-export">导出 JSON</button>
+              <button class="danger" id="sd-delete">删除会话</button>
+            </div>
+          </div>
+          <pre id="sd-summary"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+<script>
+  const api = (p, opts={}) => {
+    const headers = { 'Content-Type': 'application/json' };
+    const t = document.getElementById('tenant').value.trim();
+    const tk = document.getElementById('token').value.trim();
+    if (t) headers['X-Tenant-ID'] = t;
+    if (tk) headers['Authorization'] = 'Bearer ' + tk;
+    return fetch('/admin/api' + p, { ...opts, headers }).then(async r => {
+      const txt = await r.text();
+      let body; try { body = JSON.parse(txt); } catch { body = { message: txt }; }
+      if (!r.ok) throw new Error(body.message || ('HTTP ' + r.status));
+      return body.data !== undefined ? body.data : body;
+    });
+  };
+  const setStatus = m => document.getElementById('status').textContent = m;
+  const esc = s => (s==null?'':String(s));
+
+  function switchTab(name){
+    document.getElementById('tab-users').classList.toggle('active', name==='users');
+    document.getElementById('tab-sessions').classList.toggle('active', name==='sessions');
+    document.getElementById('panel-users').classList.toggle('hidden', name!=='users');
+    document.getElementById('panel-sessions').classList.toggle('hidden', name!=='sessions');
+  }
+
+  async function loadUsers(){
+    setStatus('加载中…');
+    try {
+      const d = await api('/users');
+      const box = document.getElementById('users-list');
+      if (!d.users.length) { box.innerHTML = '<p class="muted">无用户</p>'; return; }
+      box.innerHTML = '<table><tr><th>user_id</th><th>画像字段数</th><th></th></tr>' +
+        d.users.map(u => `<tr><td><a class="link" onclick="showUser('${esc(u.user_id)}')">${esc(u.user_id)}</a></td>` +
+          `<td>${Object.keys(u.profile||{}).length}</td>` +
+          `<td><button class="danger" onclick="delUser('${esc(u.user_id)}')">删除</button></td></tr>`).join('') + '</table>';
+      setStatus('共 ' + d.users.length + ' 个用户');
+    } catch(e){ setStatus('错误: ' + e.message); }
+  }
+
+  async function showUser(id){
+    try {
+      const d = await api('/users/' + encodeURIComponent(id));
+      document.getElementById('ud-id').textContent = id;
+      document.getElementById('ud-profile').textContent = JSON.stringify(d.profile||{}, null, 2);
+      const sbox = document.getElementById('ud-sessions');
+      sbox.innerHTML = (d.sessions||[]).map(s =>
+        `<div class="card" style="margin:6px 0"><div class="row" style="justify-content:space-between">
+           <a class="link" onclick="showSession('${esc(s.session_id)}')">${esc(s.session_id)}</a>
+           <span class="muted">${esc(s.message_count)} 条 · ${esc(s.user_id)}</span></div>
+         <div class="muted">${(s.summary||'').slice(0,120)}</div></div>`).join('') || '<p class="muted">无会话</p>';
+      document.getElementById('ud-export').onclick = () => location.href = '/admin/api/users/' + encodeURIComponent(id) + '/export?' + tokenQS();
+      document.getElementById('ud-delete').onclick = () => delUser(id);
+      document.getElementById('user-detail').classList.remove('hidden');
+    } catch(e){ setStatus('错误: ' + e.message); }
+  }
+
+  async function delUser(id){
+    if (!confirm('确认删除用户 ' + id + ' 的画像及其全部会话？')) return;
+    try { await api('/users/' + encodeURIComponent(id), { method:'DELETE' }); setStatus('已删除 ' + id); loadUsers(); document.getElementById('user-detail').classList.add('hidden'); }
+    catch(e){ setStatus('删除失败: ' + e.message); }
+  }
+
+  async function searchSessions(){
+    setStatus('检索中…');
+    const u = document.getElementById('s-user').value.trim();
+    const q = document.getElementById('s-q').value.trim();
+    const l = document.getElementById('s-limit').value.trim();
+    const qs = new URLSearchParams();
+    if (u) qs.set('user_id', u); if (q) qs.set('q', q); if (l) qs.set('limit', l);
+    try {
+      const d = await api('/sessions?' + qs.toString());
+      const box = document.getElementById('sessions-list');
+      if (!d.sessions.length) { box.innerHTML = '<p class="muted">无结果</p>'; return; }
+      box.innerHTML = d.sessions.map(s => `<div class="card" style="margin:6px 0">
+          <div class="row" style="justify-content:space-between">
+            <a class="link" onclick="showSession('${esc(s.session_id)}')">${esc(s.session_id)}</a>
+            <span class="muted">${esc(s.message_count)} 条 · ${esc(s.user_id)}</span></div>
+          <div class="muted">${(s.summary||'').slice(0,140)}</div></div>`).join('');
+      setStatus('共 ' + d.sessions.length + ' 条');
+    } catch(e){ setStatus('错误: ' + e.message); }
+  }
+
+  async function showSession(id){
+    try {
+      const d = await api('/sessions/' + encodeURIComponent(id));
+      document.getElementById('sd-id').textContent = id;
+      document.getElementById('sd-summary').textContent = JSON.stringify(d, null, 2);
+      document.getElementById('sd-export').onclick = () => location.href = '/admin/api/sessions/' + encodeURIComponent(id) + '/export?' + tokenQS();
+      document.getElementById('sd-delete').onclick = () => delSession(id);
+      document.getElementById('session-detail').classList.remove('hidden');
+    } catch(e){ setStatus('错误: ' + e.message); }
+  }
+
+  async function delSession(id){
+    if (!confirm('确认删除会话 ' + id + '？')) return;
+    try { await api('/sessions/' + encodeURIComponent(id), { method:'DELETE' }); setStatus('已删除 ' + id); document.getElementById('session-detail').classList.add('hidden'); searchSessions(); }
+    catch(e){ setStatus('删除失败: ' + e.message); }
+  }
+
+  const tokenQS = () => { const tk=document.getElementById('token').value.trim(); return tk?('&__t='+encodeURIComponent(tk)):''; };
+  document.getElementById('title').textContent = (window.__adminTitle || 'Mneme 管理后台');
+</script>
+</body>
+</html>

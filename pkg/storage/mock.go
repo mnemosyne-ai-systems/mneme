@@ -17,6 +17,8 @@ type MockInserter struct {
 	Closed   bool
 	// Err 非空时所有写入返回该错误。
 	Err error
+
+	Summaries []*models.SessionSummary
 }
 
 // NewMockInserter 创建 Mock 写入器。
@@ -55,6 +57,17 @@ func (m *MockInserter) InsertMemory(_ context.Context, memories []*models.Entity
 	return nil
 }
 
+// InsertSessionSummary 记录写入的会话总结。
+func (m *MockInserter) InsertSessionSummary(_ context.Context, summaries []*models.SessionSummary) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return m.Err
+	}
+	m.Summaries = append(m.Summaries, summaries...)
+	return nil
+}
+
 // Flush 记录刷新次数。
 func (m *MockInserter) Flush() error {
 	m.mu.Lock()
@@ -90,6 +103,13 @@ func (m *MockInserter) MemoryCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.Memories)
+}
+
+// SummaryCount 返回已写入会话总结条数。
+func (m *MockInserter) SummaryCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Summaries)
 }
 
 var _ BatchInserter = (*MockInserter)(nil)

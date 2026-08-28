@@ -41,11 +41,11 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// Watcher 监听目录并把新增/修改的文件解析后发送到 Pulsar。
+// Watcher 监听目录并把新增/修改的文件解析后投递到 HistorySink。
 type Watcher struct {
 	cfg      Config
 	registry *Registry
-	ingest   *service.IngestService
+	ingest   service.HistorySink
 	state    *State
 
 	watcher *fsnotify.Watcher
@@ -61,8 +61,9 @@ type Watcher struct {
 	once    sync.Once
 }
 
-// New 创建文件监听器。
-func New(cfg Config, ingest *service.IngestService) (*Watcher, error) {
+// New 创建文件监听器。sink 决定投递通道：
+// 独立采集器通常传 *service.HTTPHistorySink，主服务内嵌模式传 *service.IngestService。
+func New(cfg Config, sink service.HistorySink) (*Watcher, error) {
 	cfg = cfg.withDefaults()
 	state, err := LoadState(cfg.StateFile)
 	if err != nil {
@@ -75,7 +76,7 @@ func New(cfg Config, ingest *service.IngestService) (*Watcher, error) {
 	return &Watcher{
 		cfg:      cfg,
 		registry: NewRegistry(),
-		ingest:   ingest,
+		ingest:   sink,
 		state:    state,
 		watcher:  fw,
 		pending:  make(map[string]*time.Timer),

@@ -45,6 +45,14 @@ consumer:
   trace_aggregate_timeout: 30s
   # 长期记忆萃取周期
   memory_extract_interval: 10m
+  # 从对话历史中萃取用户画像（与显式记忆事件汇聚到同一张 entity_memory）
+  history_profile_enabled: true
+  history_profile_interval: 10m
+  history_profile_max_messages: 500
+  # 会话级总结（按 session_id 生成"本次对话聊了什么"，独立存储于 session_summary）
+  session_summary_enabled: true
+  session_summary_interval: 10m
+  session_summary_max_messages: 2000
 
 memory:
   llm:
@@ -62,6 +70,26 @@ filewatcher:
   debounce: 2s
   state_file: "./data/.filewatcher_state.json"
   tenant_id: "default"
+
+# 独立文件采集器 file-adapter 的投递配置（主服务内嵌 filewatcher 时忽略本节）
+adapter:
+  # http: 推送到服务端批量 API（默认，推荐，无需感知消息总线拓扑）
+  # pulsar: 直连消息总线（高吞吐可信环境）
+  mode: http
+  http:
+    endpoint: "http://localhost:8080/api/v1/history/batch"
+    token: ""
+    timeout: 10s
+    max_retries: 5
+    backoff_base: 500ms
+    max_batch_size: 500
+
+# 轻量后台管理界面（用户/画像浏览、会话检索、数据治理）
+# 默认关闭；生产建议配合网关鉴权。token 非空时要求 Authorization: Bearer <token>。
+admin:
+  enabled: false
+  token: ""
+  page_title: "Mneme 管理后台"
 
 archiver:
   enabled: false

@@ -18,6 +18,8 @@ type Config struct {
 	Consumer    ConsumerConfig    `mapstructure:"consumer"`
 	Memory      MemoryConfig      `mapstructure:"memory"`
 	FileWatcher FileWatcherConfig `mapstructure:"filewatcher"`
+	Adapter     AdapterConfig     `mapstructure:"adapter"`
+	Admin       AdminConfig       `mapstructure:"admin"`
 	Archiver    ArchiverConfig    `mapstructure:"archiver"`
 	Telemetry   TelemetryConfig   `mapstructure:"telemetry"`
 	Log         LogConfig         `mapstructure:"log"`
@@ -86,6 +88,18 @@ type ConsumerConfig struct {
 	MemoryEnabled         bool          `mapstructure:"memory_enabled"`
 	TraceAggregateTimeout time.Duration `mapstructure:"trace_aggregate_timeout"`
 	MemoryExtractInterval time.Duration `mapstructure:"memory_extract_interval"`
+	// HistoryProfileEnabled 是否从对话历史中萃取用户画像。
+	HistoryProfileEnabled bool `mapstructure:"history_profile_enabled"`
+	// HistoryProfileInterval 对话历史萃取周期。
+	HistoryProfileInterval time.Duration `mapstructure:"history_profile_interval"`
+	// HistoryProfileMaxMessages 单用户最多缓冲的对话消息数，超出丢弃最旧的。
+	HistoryProfileMaxMessages int `mapstructure:"history_profile_max_messages"`
+	// SessionSummaryEnabled 是否从对话历史中生成会话级总结。
+	SessionSummaryEnabled bool `mapstructure:"session_summary_enabled"`
+	// SessionSummaryInterval 会话总结生成周期。
+	SessionSummaryInterval time.Duration `mapstructure:"session_summary_interval"`
+	// SessionSummaryMaxMessages 单会话最多缓冲的消息数，超出丢弃最旧的。
+	SessionSummaryMaxMessages int `mapstructure:"session_summary_max_messages"`
 }
 
 // LLMConfig 长期记忆萃取所使用的 LLM 配置。
@@ -111,6 +125,42 @@ type FileWatcherConfig struct {
 	Debounce   time.Duration `mapstructure:"debounce"`
 	StateFile  string        `mapstructure:"state_file"`
 	TenantID   string        `mapstructure:"tenant_id"`
+}
+
+// AdapterConfig 独立文件采集器 file-adapter 的投递配置。
+// 主服务内嵌 filewatcher 时不使用本节。
+type AdapterConfig struct {
+	// Mode 投递模式：http 推送到服务端批量 API（默认，推荐）；
+	// pulsar 直连消息总线（高吞吐可信环境）。
+	Mode string            `mapstructure:"mode"`
+	HTTP AdapterHTTPConfig `mapstructure:"http"`
+}
+
+// AdapterHTTPConfig HTTP 投递模式配置。
+type AdapterHTTPConfig struct {
+	// Endpoint 服务端批量接入地址。
+	Endpoint string `mapstructure:"endpoint"`
+	// Token 可选的 Bearer 鉴权令牌。
+	Token string `mapstructure:"token"`
+	// Timeout 单次请求超时。
+	Timeout time.Duration `mapstructure:"timeout"`
+	// MaxRetries 可重试失败后的最大重试次数。
+	MaxRetries int `mapstructure:"max_retries"`
+	// BackoffBase 指数退避基数。
+	BackoffBase time.Duration `mapstructure:"backoff_base"`
+	// MaxBatchSize 单次请求携带的最大消息数，超出自动分片。
+	MaxBatchSize int `mapstructure:"max_batch_size"`
+}
+
+// AdminConfig 轻量后台管理界面（只读浏览 + 数据治理）配置。
+// 不做复杂鉴权：仅通过可选静态令牌（Token）做一层薄保护，生产请配合网关鉴权。
+type AdminConfig struct {
+	// Enabled 是否启用后台管理界面与接口（默认关闭）。
+	Enabled bool `mapstructure:"enabled"`
+	// Token 可选的保护令牌：非空时要求 `Authorization: Bearer <token>`。
+	Token string `mapstructure:"token"`
+	// PageTitle 管理界面标题（可选）。
+	PageTitle string `mapstructure:"page_title"`
 }
 
 // OSSConfig 对象存储配置。
@@ -202,6 +252,14 @@ func (c *Config) Validate() error {
 	if len(c.ClickHouse.Hosts) == 0 {
 		return fmt.Errorf("clickhouse.hosts must not be empty")
 	}
+	switch c.Adapter.Mode {
+	case "", "http", "pulsar":
+	default:
+		return fmt.Errorf("adapter.mode must be http or pulsar, got %q", c.Adapter.Mode)
+	}
+	if c.Adapter.HTTP.MaxBatchSize < 0 {
+		return fmt.Errorf("adapter.http.max_batch_size must not be negative")
+	}
 	return nil
 }
 
@@ -242,6 +300,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consumer.memory_enabled", true)
 	v.SetDefault("consumer.trace_aggregate_timeout", 30*time.Second)
 	v.SetDefault("consumer.memory_extract_interval", 10*time.Minute)
+	v.SetDefault("consumer.history_profile_enabled", true)
+	v.SetDefault("consumer.history_profile_interval", 10*time.Minute)
+	v.SetDefault("consumer.history_profile_max_messages", 500)
+	v.SetDefault("consumer.session_summary_enabled", true)
+	v.SetDefault("consumer.session_summary_interval", 10*time.Minute)
+	v.SetDefault("consumer.session_summary_max_messages", 2000)
 
 	v.SetDefault("memory.llm.enabled", false)
 	v.SetDefault("memory.llm.timeout", 20*time.Second)
@@ -252,6 +316,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("filewatcher.debounce", 2*time.Second)
 	v.SetDefault("filewatcher.state_file", "./data/.filewatcher_state.json")
 	v.SetDefault("filewatcher.tenant_id", "default")
+
+	v.SetDefault("adapter.mode", "http")
+	v.SetDefault("adapter.http.endpoint", "http://localhost:8080/api/v1/history/batch")
+	v.SetDefault("adapter.http.timeout", 10*time.Second)
+	v.SetDefault("adapter.http.max_retries", 5)
+	v.SetDefault("adapter.http.backoff_base", 500*time.Millisecond)
+	v.SetDefault("adapter.http.max_batch_size", 500)
+	v.SetDefault("admin.enabled", false)
+	v.SetDefault("admin.token", "")
+	v.SetDefault("admin.page_title", "Mneme 管理后台")
 
 	v.SetDefault("archiver.enabled", false)
 	v.SetDefault("archiver.cron_hour", 3)

@@ -7,11 +7,12 @@ import (
 	"github.com/mnemosyne/mneme/pkg/models"
 )
 
-// BatchInserter 是三条管道共用的批量写入抽象。
+// BatchInserter 是各管道共用的批量写入抽象。
 type BatchInserter interface {
 	InsertHistory(ctx context.Context, messages []*models.HistoryMessage) error
 	InsertTraces(ctx context.Context, traces []*models.TraceMessage) error
 	InsertMemory(ctx context.Context, memories []*models.EntityMemory) error
+	InsertSessionSummary(ctx context.Context, summaries []*models.SessionSummary) error
 	Flush() error
 	Close() error
 }
@@ -21,4 +22,5 @@ const (
 	PipelineHistory = "history"
 	PipelineTraces  = "traces"
 	PipelineMemory  = "memory"
+	PipelineSession = "session"
 )
