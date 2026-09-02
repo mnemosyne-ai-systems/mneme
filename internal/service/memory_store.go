@@ -39,6 +39,9 @@ func encodeCursor(offset int) string {
 
 // ProfileStore 负责画像的热存储（Redis）与冷存储（ClickHouse）。
 type ProfileStore interface {
+	// SaveUserInfo 在消息到达时立即写入最小用户信息（不触发 LLM），
+	// 保证管理后台可以立即检索到该用户。后续 SaveProfile 会覆盖并追加完整画像。
+	SaveUserInfo(ctx context.Context, tenant, userID string) error
 	SaveProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) (int64, error)
 	GetProfile(ctx context.Context, tenant, entityType, entityID string) (map[string]string, error)
 	// ListProfiles 列出某租户下某类型实体的画像（用于管理后台浏览），返回结果与下一页游标。
@@ -75,6 +78,25 @@ type RedisProfileStore struct {
 // NewRedisProfileStore 创建画像存储。inserter 可为 nil（仅写 Redis）。
 func NewRedisProfileStore(client redis.UniversalClient, inserter storage.BatchInserter, ttl time.Duration) *RedisProfileStore {
 	return &RedisProfileStore{client: client, inserter: inserter, ttl: ttl}
+}
+
+// SaveUserInfo 在消息到达时立即写入最小用户信息（不触发 LLM，不写 ClickHouse），
+// 保证管理后台可以立即检索到该用户。后续 SaveProfile 会覆盖并追加完整画像。
+func (s *RedisProfileStore) SaveUserInfo(ctx context.Context, tenant, userID string) error {
+	key := cache.MemoryKey(tenant, models.EntityTypeUser, userID)
+	fields := map[string]interface{}{
+		"entity_id":   userID,
+		"entity_type": models.EntityTypeUser,
+		"tenant_id":   tenant,
+		"_updated_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	pipe := s.client.TxPipeline()
+	pipe.HSet(ctx, key, fields)
+	if s.ttl > 0 {
+		pipe.Expire(ctx, key, s.ttl)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 // SaveProfile 写入 Redis Hash 与 ClickHouse，返回新的版本号。
@@ -223,6 +245,21 @@ func NewMemoryProfileStore(inserter storage.BatchInserter) *MemoryProfileStore {
 		versions: make(map[string]int64),
 		inserter: inserter,
 	}
+}
+
+// SaveUserInfo 在消息到达时立即写入最小用户信息（不触发 LLM）。
+func (s *MemoryProfileStore) SaveUserInfo(_ context.Context, tenant, userID string) error {
+	key := cache.MemoryKey(tenant, models.EntityTypeUser, userID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.profiles[key]; !ok {
+		s.profiles[key] = map[string]string{
+			"entity_id":   userID,
+			"entity_type": models.EntityTypeUser,
+			"tenant_id":   tenant,
+		}
+	}
+	return nil
 }
 
 // SaveProfile 保存画像并递增版本号。

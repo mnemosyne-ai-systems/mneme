@@ -31,7 +31,7 @@ func newTestServer(reader ProfileReader) (http.Handler, *messagebus.MemoryBus) {
 	bus := messagebus.NewMemoryBus()
 	ingest := service.NewIngestService(bus, service.Topics{History: "h", Traces: "t", Memory: "m"})
 	return NewRouter(RouterOptions{
-		History:        NewHistoryHandler(ingest),
+		History:        NewHistoryHandler(ingest, nil, nil),
 		Traces:         NewTracesHandler(ingest),
 		Memory:         NewMemoryHandler(ingest, reader),
 		Health:         NewHealthHandler(),
@@ -380,7 +380,7 @@ func newSessionsServer(reader SessionSummaryReader) http.Handler {
 	bus := messagebus.NewMemoryBus()
 	ingest := service.NewIngestService(bus, service.Topics{History: "h", Traces: "t", Memory: "m"})
 	return NewRouter(RouterOptions{
-		History:  NewHistoryHandler(ingest),
+		History:  NewHistoryHandler(ingest, nil, nil),
 		Memory:   NewMemoryHandler(ingest, nil),
 		Sessions: NewSessionsHandler(reader),
 		Health:   NewHealthHandler(),
@@ -437,6 +437,10 @@ func (s stubUserStore) GetProfile(_ context.Context, _, _, _ string) (map[string
 	return s.profile, s.profileErr
 }
 
+func (s stubUserStore) SaveUserInfo(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (s stubUserStore) SaveProfile(_ context.Context, _, _, _ string, _ map[string]string) (int64, error) {
 	return 1, nil
 }
@@ -450,6 +454,10 @@ func (s stubUserStore) DeleteProfile(_ context.Context, _, _, _ string) error {
 }
 
 func (s stubUserStore) PurgeProfile(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
+func (s stubUserStore) SaveSessionInfo(_ context.Context, _, _, _ string, _, _ time.Time) error {
 	return nil
 }
 
@@ -570,7 +578,7 @@ func TestAdminUserAndSessionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), ""))
+	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), "", nil))
 
 	// 列表用户
 	rr := doJSON(t, h, http.MethodGet, "/users", "", map[string]string{HeaderTenantID: "t1"})
@@ -628,7 +636,7 @@ func TestAdminUserAndSessionLifecycle(t *testing.T) {
 func TestAdminTokenGuard(t *testing.T) {
 	profiles := service.NewMemoryProfileStore(nil)
 	sessions := service.NewMemorySessionSummaryStore(nil)
-	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), "secret"))
+	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), "secret", nil))
 
 	// 无令牌 → 401
 	rr := doJSON(t, h, http.MethodGet, "/users", "", map[string]string{HeaderTenantID: "t1"})
@@ -653,7 +661,7 @@ func TestAdminCursorSoftDeleteAndAudit(t *testing.T) {
 	profiles := service.NewMemoryProfileStore(nil)
 	sessions := service.NewMemorySessionSummaryStore(nil)
 	audit := service.NewMemoryAuditStore()
-	h := newAdminServer(NewAdminHandler(profiles, sessions, audit, ""))
+	h := newAdminServer(NewAdminHandler(profiles, sessions, audit, "", nil))
 
 	// 创建 3 个会话，结束时间递增（用于验证按时间倒序）。
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

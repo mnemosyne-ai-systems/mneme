@@ -18,6 +18,9 @@ import (
 
 // SessionSummaryStore 负责会话总结的热存储（Redis）与冷存储（ClickHouse）。
 type SessionSummaryStore interface {
+	// SaveSessionInfo 在消息到达时立即记录会话基本信息（不依赖 LLM 总结），
+	// 保证管理后台可以立即检索到该会话。后续 SaveSummary 会覆盖并追加总结字段。
+	SaveSessionInfo(ctx context.Context, tenant, sessionID, userID string, startedAt, endedAt time.Time) error
 	SaveSummary(ctx context.Context, summary *models.SessionSummary) (int64, error)
 	GetSummary(ctx context.Context, tenant, sessionID string) (*models.SessionSummary, error)
 	// ListSessionsByUser 返回某租户下属于指定用户的全部会话总结（按结束时间倒序）。
@@ -56,6 +59,27 @@ type RedisSessionSummaryStore struct {
 // NewRedisSessionSummaryStore 创建会话总结存储。inserter 可为 nil（仅写 Redis）。
 func NewRedisSessionSummaryStore(client redis.UniversalClient, inserter storage.BatchInserter, ttl time.Duration) *RedisSessionSummaryStore {
 	return &RedisSessionSummaryStore{client: client, inserter: inserter, ttl: ttl}
+}
+
+// SaveSessionInfo 在消息到达时立即写入会话基本信息（不触发 LLM，不写 ClickHouse），
+// 保证管理后台可立即检索到该会话。后续 SaveSummary 会覆盖并追加总结字段。
+func (s *RedisSessionSummaryStore) SaveSessionInfo(ctx context.Context, tenant, sessionID, userID string, startedAt, endedAt time.Time) error {
+	key := cache.SessionKey(tenant, sessionID)
+	fields := map[string]interface{}{
+		"session_id":  sessionID,
+		"tenant_id":   tenant,
+		"user_id":     userID,
+		"started_at":  startedAt.UTC().Format(time.RFC3339),
+		"ended_at":    endedAt.UTC().Format(time.RFC3339),
+		"_updated_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	pipe := s.client.TxPipeline()
+	pipe.HSet(ctx, key, fields)
+	if s.ttl > 0 {
+		pipe.Expire(ctx, key, s.ttl)
+	}
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 // SaveSummary 写入 Redis Hash 与 ClickHouse，返回新的版本号。
@@ -283,6 +307,23 @@ func NewMemorySessionSummaryStore(inserter storage.BatchInserter) *MemorySession
 		deleted:   make(map[string]bool),
 		inserter:  inserter,
 	}
+}
+
+// SaveSessionInfo 立即记录会话基本信息（不触发 LLM）。
+func (s *MemorySessionSummaryStore) SaveSessionInfo(_ context.Context, tenant, sessionID, userID string, startedAt, endedAt time.Time) error {
+	key := cache.SessionKey(tenant, sessionID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.summaries[key]; !ok {
+		s.summaries[key] = &models.SessionSummary{
+			SessionID: sessionID,
+			TenantID:  tenant,
+			UserID:    userID,
+			StartedAt: startedAt,
+			EndedAt:   endedAt,
+		}
+	}
+	return nil
 }
 
 // SaveSummary 保存总结并递增版本号。

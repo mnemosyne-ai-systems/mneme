@@ -87,7 +87,7 @@ adapter:
 # 轻量后台管理界面（用户/画像浏览、会话检索、数据治理）
 # 默认关闭；生产建议配合网关鉴权。token 非空时要求 Authorization: Bearer <token>。
 admin:
-  enabled: false
+  enabled: true
   token: ""
   page_title: "Mneme 管理后台"
 

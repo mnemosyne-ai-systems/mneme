@@ -248,7 +248,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 	// HTTP
 	routerOpts := api.RouterOptions{
-		History:        api.NewHistoryHandler(ingest),
+		History:        api.NewHistoryHandler(ingest, profileStore, app.sessionStore),
 		Traces:         api.NewTracesHandler(ingest),
 		Memory:         api.NewMemoryHandler(ingest, profileStore),
 		Sessions:       api.NewSessionsHandler(app.sessionStore),
@@ -265,7 +265,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		if redisClient != nil {
 			auditStore = service.NewRedisAuditStore(redisClient)
 		}
-		app.adminHandler = api.NewAdminHandler(profileStore, app.sessionStore, auditStore, cfg.Admin.Token)
+		app.adminHandler = api.NewAdminHandler(profileStore, app.sessionStore, auditStore, cfg.Admin.Token, app.sessionConsumer)
 		routerOpts.Admin = app.adminHandler
 		routerOpts.AdminUI = api.NewAdminUIHandler(cfg.Admin.PageTitle)
 	}

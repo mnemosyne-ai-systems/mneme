@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,18 +15,24 @@ import (
 	"github.com/mnemosyne/mneme/pkg/models"
 )
 
+// SessionSummarizer 可触发即时会话总结的接口（对应 SessionSummaryConsumer.RunSummarization）。
+type SessionSummarizer interface {
+	RunSummarization(ctx context.Context) (int, error)
+}
+
 // AdminHandler 轻量后台管理接口：用户/画像浏览、会话总结检索、数据治理（软删除/硬删除/导出）。
 // 不做复杂鉴权，仅支持可选静态令牌（Token）薄保护；所有变更操作记录审计日志。
 type AdminHandler struct {
-	profiles service.ProfileStore
-	sessions service.SessionSummaryStore
-	audit    service.AuditStore
-	token    string
+	profiles    service.ProfileStore
+	sessions    service.SessionSummaryStore
+	summarizer  SessionSummarizer
+	audit       service.AuditStore
+	token       string
 }
 
-// NewAdminHandler 创建后台管理 handler。profiles/sessions/audit 可为 nil（对应功能返回 404）。
-func NewAdminHandler(profiles service.ProfileStore, sessions service.SessionSummaryStore, audit service.AuditStore, token string) *AdminHandler {
-	return &AdminHandler{profiles: profiles, sessions: sessions, audit: audit, token: token}
+// NewAdminHandler 创建后台管理 handler。profiles/sessions/audit/summarizer 可为 nil。
+func NewAdminHandler(profiles service.ProfileStore, sessions service.SessionSummaryStore, audit service.AuditStore, token string, summarizer SessionSummarizer) *AdminHandler {
+	return &AdminHandler{profiles: profiles, sessions: sessions, audit: audit, token: token, summarizer: summarizer}
 }
 
 // Register 注册后台管理路由到给定子路由（前缀 /admin/api）。
@@ -37,6 +45,7 @@ func (h *AdminHandler) Register(r *mux.Router) {
 	r.HandleFunc("/sessions/{session_id}", h.GetSession).Methods(http.MethodGet)
 	r.HandleFunc("/sessions/{session_id}/export", h.ExportSession).Methods(http.MethodGet)
 	r.HandleFunc("/sessions/{session_id}", h.DeleteSession).Methods(http.MethodDelete)
+	r.HandleFunc("/sessions/summarize", h.SummarizeSessions).Methods(http.MethodPost)
 	r.HandleFunc("/audit", h.ListAudit).Methods(http.MethodGet)
 }
 
@@ -258,6 +267,26 @@ func (h *AdminHandler) SearchSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]interface{}{"tenant_id": tenant, "sessions": list, "count": len(list), "next_cursor": next})
+}
+
+// SummarizeSessions 处理 POST /admin/api/sessions/summarize（立即触发一次会话总结，无需等待定时窗口）。
+func (h *AdminHandler) SummarizeSessions(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(r) {
+		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid admin token")
+		return
+	}
+	if h.summarizer == nil {
+		writeError(w, http.StatusNotFound, CodeNotFound, "session summarizer not configured")
+		return
+	}
+	n, err := h.summarizer.RunSummarization(r.Context())
+	if err != nil {
+		logger.FromContext(r.Context()).WithError(err).Error("admin summarize sessions failed")
+		internalError(w, "failed to summarize sessions")
+		return
+	}
+	h.recordAudit(r, "summarize_sessions", "", fmt.Sprintf("processed %d sessions", n))
+	writeOK(w, map[string]interface{}{"processed": n})
 }
 
 // GetSession 处理 GET /admin/api/sessions/{session_id}。

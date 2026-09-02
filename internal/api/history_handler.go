@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,12 +21,14 @@ const maxBatchMessages = 1000
 
 // HistoryHandler 管道一 HTTP 接入。
 type HistoryHandler struct {
-	ingest *service.IngestService
+	ingest   *service.IngestService
+	profiles service.ProfileStore
+	sessions service.SessionSummaryStore
 }
 
-// NewHistoryHandler 创建 handler。
-func NewHistoryHandler(ingest *service.IngestService) *HistoryHandler {
-	return &HistoryHandler{ingest: ingest}
+// NewHistoryHandler 创建 handler。profiles/sessions 可为 nil（跳过即时记录）。
+func NewHistoryHandler(ingest *service.IngestService, profiles service.ProfileStore, sessions service.SessionSummaryStore) *HistoryHandler {
+	return &HistoryHandler{ingest: ingest, profiles: profiles, sessions: sessions}
 }
 
 // historyRequest 是 POST /api/v1/history 的请求体。
@@ -95,6 +98,8 @@ func (h *HistoryHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, CodeUpstream, "failed to publish message")
 		return
 	}
+	h.recordSessionInfo(r.Context(), tenant, msg)
+	h.recordUserInfo(r.Context(), tenant, msg.UserID)
 
 	writeAccepted(w, map[string]string{"message_id": msg.MessageID})
 }
@@ -140,6 +145,10 @@ func (h *HistoryHandler) CreateBatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, CodeUpstream, "failed to publish messages")
 		return
 	}
+	for _, m := range msgs {
+		h.recordSessionInfo(r.Context(), m.TenantID, m)
+		h.recordUserInfo(r.Context(), m.TenantID, m.UserID)
+	}
 
 	writeAccepted(w, map[string]int{"accepted": len(msgs)})
 }
@@ -156,4 +165,25 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) error {
 		return errMultipleJSONObjects
 	}
 	return nil
+}
+
+// recordSessionInfo 在消息到达时立即记录会话基本信息（不阻塞主流程，忽略错误）。
+func (h *HistoryHandler) recordSessionInfo(ctx context.Context, tenant string, msg *models.HistoryMessage) {
+	if h.sessions == nil || msg.SessionID == "" {
+		return
+	}
+	now := time.Now().UTC()
+	ts := now
+	if !msg.CreatedAt.IsZero() {
+		ts = msg.CreatedAt
+	}
+	_ = h.sessions.SaveSessionInfo(ctx, tenant, msg.SessionID, msg.UserID, ts, ts)
+}
+
+// recordUserInfo 在消息到达时立即记录最小用户信息（不阻塞主流程，忽略错误）。
+func (h *HistoryHandler) recordUserInfo(ctx context.Context, tenant, userID string) {
+	if h.profiles == nil || userID == "" {
+		return
+	}
+	_ = h.profiles.SaveUserInfo(ctx, tenant, userID)
 }
