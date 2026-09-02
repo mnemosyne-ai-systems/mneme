@@ -32,6 +32,9 @@ const (
 
 	insertSummarySQL = `INSERT INTO session_summary (
         session_id, tenant_id, user_id, summary, message_count, started_at, ended_at, _version, updated_at)`
+
+	insertAuditLogSQL = `INSERT INTO audit_log (
+        id, tenant_id, actor, action, target, detail, at)`
 )
 
 // BatchInserter 实现 storage.BatchInserter，
@@ -48,6 +51,7 @@ type BatchInserter struct {
 	traces    []*models.TraceMessage
 	memories  []*models.EntityMemory
 	summaries []*models.SessionSummary
+	auditLogs []*models.AuditEntry
 
 	closed  bool
 	stopCh  chan struct{}
@@ -188,11 +192,10 @@ func (b *BatchInserter) InsertSessionSummary(ctx context.Context, summaries []*m
 }
 
 // Flush 立即刷新所有缓冲区。写入失败的数据会被放回缓冲区，等待下次重试，
-// 避免定时 flush 失败导致数据静默丢失。
 func (b *BatchInserter) Flush() error {
 	b.mu.Lock()
-	history, traces, memories, summaries := b.history, b.traces, b.memories, b.summaries
-	b.history, b.traces, b.memories, b.summaries = nil, nil, nil, nil
+	history, traces, memories, summaries, auditLogs := b.history, b.traces, b.memories, b.summaries, b.auditLogs
+	b.history, b.traces, b.memories, b.summaries, b.auditLogs = nil, nil, nil, nil, nil
 	b.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -223,9 +226,15 @@ func (b *BatchInserter) Flush() error {
 			b.requeueSummaries(summaries)
 		}
 	}
+	if len(auditLogs) > 0 {
+		if err := b.writeAuditLog(ctx, auditLogs); err != nil {
+			errs = append(errs, err)
+			b.requeueAuditLogs(auditLogs)
+		}
+	}
+
 	return errors.Join(errs...)
 }
-
 // requeueHistory 把写失败的数据放回缓冲区（已关闭则丢弃并告警）。
 func (b *BatchInserter) requeueHistory(rows []*models.HistoryMessage) {
 	b.mu.Lock()
@@ -268,6 +277,91 @@ func (b *BatchInserter) requeueSummaries(rows []*models.SessionSummary) {
 		return
 	}
 	b.summaries = append(rows, b.summaries...)
+}
+
+// requeueAuditLogs 把写失败的审计日志放回缓冲区（已关闭则丢弃并告警）。
+func (b *BatchInserter) requeueAuditLogs(rows []*models.AuditEntry) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		logger.L().WithField("rows", len(rows)).Error("clickhouse: drop audit rows after close")
+		return
+	}
+	b.auditLogs = append(rows, b.auditLogs...)
+}
+
+// InsertAuditLog 缓冲审计日志，达到阈值时立即刷新。
+func (b *BatchInserter) InsertAuditLog(ctx context.Context, entry *models.AuditEntry) error {
+	if entry == nil {
+		return nil
+	}
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return ErrInserterClosed
+	}
+	b.auditLogs = append(b.auditLogs, entry)
+	var batch []*models.AuditEntry
+	if len(b.auditLogs) >= b.batchSize {
+		batch, b.auditLogs = b.auditLogs, nil
+	}
+	b.mu.Unlock()
+
+	if batch != nil {
+		return b.writeAuditLog(ctx, batch)
+	}
+	return nil
+}
+
+// writeAuditLog 写入审计日志到 ClickHouse。
+func (b *BatchInserter) writeAuditLog(ctx context.Context, entries []*models.AuditEntry) error {
+	return b.withRetry(ctx, "audit_log", len(entries), func(ctx context.Context) error {
+		batch, err := b.conn.PrepareBatch(ctx, insertAuditLogSQL)
+		if err != nil {
+			return fmt.Errorf("clickhouse: prepare audit batch: %w", err)
+		}
+		for _, e := range entries {
+			id := uint64(time.Now().UnixNano())
+			if err := batch.Append(
+				id, e.TenantID, e.Actor, e.Action, e.Target, e.Detail, e.At,
+			); err != nil {
+				return fmt.Errorf("clickhouse: append audit: %w", err)
+			}
+		}
+		return batch.Send()
+	})
+}
+
+// QueryAuditLog 查询审计日志（按时间倒序）。
+func (b *BatchInserter) QueryAuditLog(ctx context.Context, tenant string, limit, offset int) ([]*models.AuditEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `
+		SELECT id, tenant_id, actor, action, target, detail, at
+		FROM audit_log
+		WHERE tenant_id = ?
+		ORDER BY at DESC
+		LIMIT ? OFFSET ?
+	`
+	rows, err := b.conn.Query(ctx, query, tenant, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: query audit log: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*models.AuditEntry
+	for rows.Next() {
+		var e models.AuditEntry
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.Actor, &e.Action, &e.Target, &e.Detail, &e.At); err != nil {
+			return nil, fmt.Errorf("clickhouse: scan audit log: %w", err)
+		}
+		out = append(out, &e)
+	}
+	return out, rows.Err()
 }
 
 // Close 停止定时器并刷新剩余数据。

@@ -78,7 +78,7 @@ func (h *AdminHandler) recordAudit(r *http.Request, action, target, detail strin
 	if h.audit == nil {
 		return
 	}
-	if err := h.audit.Append(r.Context(), service.AuditEntry{
+	if err := h.audit.Append(r.Context(), models.AuditEntry{
 		TenantID: h.tenant(r),
 		Actor:    h.actor(r),
 		Action:   action,
@@ -186,7 +186,7 @@ func (h *AdminHandler) ExportUser(w http.ResponseWriter, r *http.Request) {
 		sessions, _ = h.sessions.ListSessionsByUser(r.Context(), tenant, userID)
 	}
 	body := map[string]interface{}{"user_id": userID, "tenant_id": tenant, "profile": profile, "sessions": sessions}
-	h.recordAudit(r, service.AuditActionExportUser, userID, "")
+	h.recordAudit(r, models.AuditActionExportUser, userID, "")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=user_"+userID+".json")
 	_ = json.NewEncoder(w).Encode(body)
@@ -232,9 +232,9 @@ func (h *AdminHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	action := service.AuditActionDeleteUser
+	action := models.AuditActionDeleteUser
 	if hard {
-		action = service.AuditActionHardDeleteUser
+		action = models.AuditActionHardDeleteUser
 	}
 	h.recordAudit(r, action, userID, "")
 	writeOK(w, map[string]interface{}{"deleted": userID, "hard": hard})
@@ -405,7 +405,7 @@ func (h *AdminHandler) ExportSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, CodeNotFound, "session not found")
 		return
 	}
-	h.recordAudit(r, service.AuditActionExportSession, sessionID, "")
+	h.recordAudit(r, models.AuditActionExportSession, sessionID, "")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=session_"+sessionID+".json")
 	_ = json.NewEncoder(w).Encode(sum)
@@ -439,9 +439,9 @@ func (h *AdminHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
 		internalError(w, "failed to delete session")
 		return
 	}
-	action := service.AuditActionDeleteSession
+	action := models.AuditActionDeleteSession
 	if hard {
-		action = service.AuditActionHardDelete
+		action = models.AuditActionHardDelete
 	}
 	h.recordAudit(r, action, sessionID, "")
 	writeOK(w, map[string]interface{}{"deleted": sessionID, "hard": hard})

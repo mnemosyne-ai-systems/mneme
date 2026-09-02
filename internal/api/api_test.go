@@ -735,7 +735,7 @@ func TestAdminCursorSoftDeleteAndAudit(t *testing.T) {
 	}
 	found := false
 	for _, e := range entries {
-		if e.(map[string]interface{})["action"] == service.AuditActionDeleteSession {
+		if e.(map[string]interface{})["action"] == models.AuditActionDeleteSession {
 			found = true
 		}
 	}

@@ -18,7 +18,8 @@ type MockInserter struct {
 	// Err 非空时所有写入返回该错误。
 	Err error
 
-	Summaries []*models.SessionSummary
+	Summaries  []*models.SessionSummary
+	AuditLogs []*models.AuditEntry
 }
 
 // NewMockInserter 创建 Mock 写入器。
@@ -66,6 +67,41 @@ func (m *MockInserter) InsertSessionSummary(_ context.Context, summaries []*mode
 	}
 	m.Summaries = append(m.Summaries, summaries...)
 	return nil
+}
+
+// InsertAuditLog 记录写入的审计日志。
+func (m *MockInserter) InsertAuditLog(_ context.Context, entry *models.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return m.Err
+	}
+	m.AuditLogs = append(m.AuditLogs, entry)
+	return nil
+}
+
+// QueryAuditLog 返回审计日志（按时间倒序）。
+func (m *MockInserter) QueryAuditLog(_ context.Context, tenant string, limit, offset int) ([]*models.AuditEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*models.AuditEntry
+	for _, e := range m.AuditLogs {
+		if e.TenantID == tenant {
+			out = append(out, e)
+		}
+	}
+	// 倒序
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	if offset > len(out) {
+		offset = len(out)
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
 }
 
 // Flush 记录刷新次数。

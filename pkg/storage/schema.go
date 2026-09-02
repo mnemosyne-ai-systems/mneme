@@ -66,11 +66,26 @@ CREATE TABLE IF NOT EXISTS session_summary (
     updated_at    DateTime
 ) ENGINE = ReplacingMergeTree(_version)
 ORDER BY (tenant_id, session_id)`
+
+	// DDLAuditLog 审计日志表（只追加，按时间倒序查询）。
+	DDLAuditLog = `
+CREATE TABLE IF NOT EXISTS audit_log (
+    id          UInt64,
+    tenant_id   String,
+    actor       String,
+    action      String,
+    target      String,
+    detail      String,
+    at          DateTime
+) ENGINE = MergeTree()
+ORDER BY (tenant_id, at)
+PARTITION BY toYYYYMM(at)
+TTL at + INTERVAL 90 DAY`
 )
 
 // SchemaStatements 返回按顺序执行的建表语句。
 func SchemaStatements() []string {
-	return []string{DDLHistoryMessage, DDLAgentTraces, DDLEntityMemory, DDLSessionSummary}
+	return []string{DDLHistoryMessage, DDLAgentTraces, DDLEntityMemory, DDLSessionSummary, DDLAuditLog}
 }
 
 // DatabaseDDL 返回创建数据库的语句。

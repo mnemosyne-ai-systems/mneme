@@ -26,6 +26,9 @@
     th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #334155; font-size:13px; }
     a.link { color:var(--accent); cursor:pointer; }
     .hidden { display:none; }
+    .truncated { display:inline; }
+    .expand-btn { background:none; border:none; color:var(--accent); font-size:12px; cursor:pointer; padding:0 4px; }
+    .expand-btn:hover { text-decoration:underline; }
   </style>
 </head>
 <body>
@@ -270,6 +273,56 @@
       box.innerHTML = '<table><tr><th>时间</th><th>操作人</th><th>动作</th><th>目标</th><th>备注</th></tr>' +
         (rows || '<tr><td colspan="5" class="muted">无记录</td></tr>') + '</table>';
     } catch(e){ setStatus('审计日志加载失败: ' + e.message); }
+  }
+
+  // 截断长文本，返回 { short, full, isLong }
+  function truncateText(text, maxLen) {
+    if (!text || text.length <= maxLen) return { short: text, full: text, isLong: false };
+    return { short: text.slice(0, maxLen) + '…', full: text, isLong: true };
+  }
+
+  // 渲染可展开的文本块
+  function renderExpandable(text, maxLen) {
+    const t = truncateText(text, maxLen);
+    if (!t.isLong) return esc(t.full);
+    const id = 'exp-' + Math.random().toString(36).slice(2);
+    return `<span class="truncated" id="${id}-short">${esc(t.short)}</span>` +
+      `<span class="hidden" id="${id}-full">${esc(t.full)}</span>` +
+      `<button class="expand-btn" onclick="toggleExpand('${id}')">展开</button>`;
+  }
+
+  function toggleExpand(id){
+    const short = document.getElementById(id + '-short');
+    const full = document.getElementById(id + '-full');
+    const btn = full ? full.nextElementSibling : short.nextElementSibling;
+    if (short && full) {
+      const isHidden = full.classList.contains('hidden');
+      short.classList.toggle('hidden', isHidden);
+      full.classList.toggle('hidden', !isHidden);
+      if (btn) btn.textContent = isHidden ? '收起' : '展开';
+    }
+  }
+
+  async function loadSessionHistory(id){
+    try {
+      const d = await api('/sessions/' + encodeURIComponent(id) + '/history');
+      const history = d.history || [];
+      const box = document.getElementById('sd-history-content');
+      if (!history.length) {
+        box.textContent = '无历史消息';
+        return;
+      }
+      box.innerHTML = history.map(m => {
+        const contentHtml = renderExpandable(m.content, 300);
+        return `<div class="card" style="margin:6px 0">
+          <div class="row" style="justify-content:space-between">
+            <span class="${m.role === 'user' ? '' : 'muted'}">${esc(m.role)}</span>
+            <span class="muted">${esc(m.created_at)}</span>
+          </div>
+          <div>${contentHtml}</div>
+        </div>`;
+      }).join('');
+    } catch(e){ setStatus('加载历史失败: ' + e.message); }
   }
 
   const tokenQS = () => { const tk=document.getElementById('token').value.trim(); return tk?('&__t='+encodeURIComponent(tk)):''; };
