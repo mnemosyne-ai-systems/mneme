@@ -13,6 +13,7 @@ import (
 	"github.com/mnemosyne/mneme/internal/service"
 	"github.com/mnemosyne/mneme/pkg/logger"
 	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne/mneme/pkg/storage"
 )
 
 // SessionSummarizer 可触发即时会话总结的接口（对应 SessionSummaryConsumer.RunSummarization）。
@@ -23,16 +24,17 @@ type SessionSummarizer interface {
 // AdminHandler 轻量后台管理接口：用户/画像浏览、会话总结检索、数据治理（软删除/硬删除/导出）。
 // 不做复杂鉴权，仅支持可选静态令牌（Token）薄保护；所有变更操作记录审计日志。
 type AdminHandler struct {
-	profiles    service.ProfileStore
-	sessions    service.SessionSummaryStore
-	summarizer  SessionSummarizer
-	audit       service.AuditStore
-	token       string
+	profiles   service.ProfileStore
+	sessions   service.SessionSummaryStore
+	summarizer SessionSummarizer
+	audit      service.AuditStore
+	inserter   storage.BatchInserter
+	token      string
 }
 
-// NewAdminHandler 创建后台管理 handler。profiles/sessions/audit/summarizer 可为 nil。
-func NewAdminHandler(profiles service.ProfileStore, sessions service.SessionSummaryStore, audit service.AuditStore, token string, summarizer SessionSummarizer) *AdminHandler {
-	return &AdminHandler{profiles: profiles, sessions: sessions, audit: audit, token: token, summarizer: summarizer}
+// NewAdminHandler 创建后台管理 handler。profiles/sessions/audit/summarizer/inserter 可为 nil。
+func NewAdminHandler(profiles service.ProfileStore, sessions service.SessionSummaryStore, audit service.AuditStore, token string, summarizer SessionSummarizer, inserter storage.BatchInserter) *AdminHandler {
+	return &AdminHandler{profiles: profiles, sessions: sessions, audit: audit, token: token, summarizer: summarizer, inserter: inserter}
 }
 
 // Register 注册后台管理路由到给定子路由（前缀 /admin/api）。
@@ -346,10 +348,26 @@ func (h *AdminHandler) GetSessionHistory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// 从 ClickHouse 读取完整历史消息
-	var history []models.HistoryMessage
-	if h.sessions != nil {
-		// 这里需要通过存储层查询，暂时返回摘要信息
-		// TODO: 实现从 ClickHouse 查询该 session_id 的所有消息
+	var history []*models.HistoryMessage
+	if h.inserter != nil {
+		limit := 500
+		offset := 0
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if v, err := strconv.Atoi(l); err == nil && v > 0 {
+				limit = v
+			}
+		}
+		if o := r.URL.Query().Get("offset"); o != "" {
+			if v, err := strconv.Atoi(o); err == nil && v >= 0 {
+				offset = v
+			}
+		}
+		history, err = h.inserter.QueryHistoryBySession(r.Context(), tenant, sessionID, limit, offset)
+		if err != nil {
+			logger.FromContext(r.Context()).WithError(err).Error("admin query session history failed")
+			internalError(w, "failed to query history")
+			return
+		}
 	}
 	writeOK(w, map[string]interface{}{
 		"session_id":    sum.SessionID,

@@ -13,6 +13,8 @@ type BatchInserter interface {
 	InsertTraces(ctx context.Context, traces []*models.TraceMessage) error
 	InsertMemory(ctx context.Context, memories []*models.EntityMemory) error
 	InsertSessionSummary(ctx context.Context, summaries []*models.SessionSummary) error
+	// QueryHistoryBySession 查询某会话的完整对话历史（按时间升序）。
+	QueryHistoryBySession(ctx context.Context, tenant, sessionID string, limit, offset int) ([]*models.HistoryMessage, error)
 	Flush() error
 	Close() error
 }

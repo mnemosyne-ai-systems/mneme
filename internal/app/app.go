@@ -265,7 +265,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		if redisClient != nil {
 			auditStore = service.NewRedisAuditStore(redisClient)
 		}
-		app.adminHandler = api.NewAdminHandler(profileStore, app.sessionStore, auditStore, cfg.Admin.Token, app.sessionConsumer)
+		app.adminHandler = api.NewAdminHandler(profileStore, app.sessionStore, auditStore, cfg.Admin.Token, app.sessionConsumer, app.inserter)
 		routerOpts.Admin = app.adminHandler
 		routerOpts.AdminUI = api.NewAdminUIHandler(cfg.Admin.PageTitle)
 	}

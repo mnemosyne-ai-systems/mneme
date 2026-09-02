@@ -578,7 +578,7 @@ func TestAdminUserAndSessionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), "", nil))
+	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), "", nil, nil))
 
 	// 列表用户
 	rr := doJSON(t, h, http.MethodGet, "/users", "", map[string]string{HeaderTenantID: "t1"})
@@ -636,7 +636,7 @@ func TestAdminUserAndSessionLifecycle(t *testing.T) {
 func TestAdminTokenGuard(t *testing.T) {
 	profiles := service.NewMemoryProfileStore(nil)
 	sessions := service.NewMemorySessionSummaryStore(nil)
-	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), "secret", nil))
+	h := newAdminServer(NewAdminHandler(profiles, sessions, service.NewMemoryAuditStore(), "secret", nil, nil))
 
 	// 无令牌 → 401
 	rr := doJSON(t, h, http.MethodGet, "/users", "", map[string]string{HeaderTenantID: "t1"})
@@ -661,7 +661,7 @@ func TestAdminCursorSoftDeleteAndAudit(t *testing.T) {
 	profiles := service.NewMemoryProfileStore(nil)
 	sessions := service.NewMemorySessionSummaryStore(nil)
 	audit := service.NewMemoryAuditStore()
-	h := newAdminServer(NewAdminHandler(profiles, sessions, audit, "", nil))
+	h := newAdminServer(NewAdminHandler(profiles, sessions, audit, "", nil, nil))
 
 	// 创建 3 个会话，结束时间递增（用于验证按时间倒序）。
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

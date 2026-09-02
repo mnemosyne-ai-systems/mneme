@@ -112,4 +112,24 @@ func (m *MockInserter) SummaryCount() int {
 	return len(m.Summaries)
 }
 
+// QueryHistoryBySession 返回指定会话的历史消息（内存过滤）。
+func (m *MockInserter) QueryHistoryBySession(_ context.Context, tenant, sessionID string, limit, offset int) ([]*models.HistoryMessage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*models.HistoryMessage
+	for _, m := range m.History {
+		if m.TenantID == tenant && m.SessionID == sessionID {
+			out = append(out, m)
+		}
+	}
+	if offset > len(out) {
+		offset = len(out)
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
+}
+
 var _ BatchInserter = (*MockInserter)(nil)
