@@ -43,6 +43,10 @@ type SessionSearchOptions struct {
 	UserID string
 	// Query 关键字，匹配 session_id 或 summary 子串（可选）。
 	Query string
+	// StartTime 开始时间过滤（RFC3339，可选）。
+	StartTime string
+	// EndTime 结束时间过滤（RFC3339，可选）。
+	EndTime string
 	// Cursor 分页游标（由上一页返回的 next_cursor），空表示首页。
 	Cursor string
 	// Limit 返回条数上限，<=0 表示默认 100。
@@ -163,13 +167,27 @@ func (s *RedisSessionSummaryStore) ListSessionsByUser(ctx context.Context, tenan
 	return out, nil
 }
 
-// SearchSessions 检索会话总结（管理后台），支持按 user_id 与关键字过滤、游标分页、按时间倒序。
+// SearchSessions 检索会话总结（管理后台），支持按 user_id 与关键字过滤、游标分页、按时间倒序、时间范围过滤。
 func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant string, opts SessionSearchOptions) ([]*models.SessionSummary, string, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	q := strings.ToLower(opts.Query)
+	var startTime, endTime time.Time
+	var err error
+	if opts.StartTime != "" {
+		startTime, err = time.Parse(time.RFC3339, opts.StartTime)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid start_time: %w", err)
+		}
+	}
+	if opts.EndTime != "" {
+		endTime, err = time.Parse(time.RFC3339, opts.EndTime)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid end_time: %w", err)
+		}
+	}
 	iter := s.client.Scan(ctx, 0, cache.SessionKey(tenant, "*"), 0).Iterator()
 	var all []*models.SessionSummary
 	for iter.Next(ctx) {
@@ -186,6 +204,16 @@ func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant st
 		if q != "" {
 			hay := strings.ToLower(res["session_id"] + " " + res["summary"])
 			if !strings.Contains(hay, q) {
+				continue
+			}
+		}
+		if opts.StartTime != "" || opts.EndTime != "" {
+			sessionStart, _ := time.Parse(time.RFC3339, res["started_at"])
+			sessionEnd, _ := time.Parse(time.RFC3339, res["ended_at"])
+			if !startTime.IsZero() && sessionEnd.Before(startTime) {
+				continue
+			}
+			if !endTime.IsZero() && sessionStart.After(endTime) {
 				continue
 			}
 		}
@@ -382,13 +410,27 @@ func (s *MemorySessionSummaryStore) ListSessionsByUser(_ context.Context, tenant
 	return out, nil
 }
 
-// SearchSessions 检索内存中的会话总结（游标分页、按时间倒序、跳过已删除）。
+// SearchSessions 检索内存中的会话总结（游标分页、按时间倒序、跳过已删除、时间范围过滤）。
 func (s *MemorySessionSummaryStore) SearchSessions(_ context.Context, tenant string, opts SessionSearchOptions) ([]*models.SessionSummary, string, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	q := strings.ToLower(opts.Query)
+	var startTime, endTime time.Time
+	var err error
+	if opts.StartTime != "" {
+		startTime, err = time.Parse(time.RFC3339, opts.StartTime)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid start_time: %w", err)
+		}
+	}
+	if opts.EndTime != "" {
+		endTime, err = time.Parse(time.RFC3339, opts.EndTime)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid end_time: %w", err)
+		}
+	}
 	prefix := cache.SessionKey(tenant, "")
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -406,6 +448,14 @@ func (s *MemorySessionSummaryStore) SearchSessions(_ context.Context, tenant str
 		if q != "" {
 			hay := strings.ToLower(p.SessionID + " " + p.Summary)
 			if !strings.Contains(hay, q) {
+				continue
+			}
+		}
+		if opts.StartTime != "" || opts.EndTime != "" {
+			if !startTime.IsZero() && p.EndedAt.Before(startTime) {
+				continue
+			}
+			if !endTime.IsZero() && p.StartedAt.After(endTime) {
 				continue
 			}
 		}

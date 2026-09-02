@@ -69,11 +69,13 @@
     <!-- 会话检索 -->
     <section id="panel-sessions" class="hidden">
       <div class="toolbar">
-        <input id="s-user" placeholder="user_id（可选）" style="width:160px"/>
-        <input id="s-q" placeholder="关键字（session_id / 摘要）" style="width:240px"/>
-        <input id="s-limit" placeholder="limit" value="50" style="width:80px"/>
+        <input id="s-user" placeholder="user_id（可选）" style="width:140px"/>
+        <input id="s-q" placeholder="关键字（session_id / 摘要）" style="width:200px"/>
+        <input id="s-start" type="datetime-local" title="开始时间" style="width:170px"/>
+        <input id="s-end" type="datetime-local" title="结束时间" style="width:170px"/>
+        <input id="s-limit" placeholder="limit" value="50" style="width:70px"/>
         <button class="primary" onclick="searchSessions()">检索</button>
-        <span class="muted">点击会话查看详情，可删除/导出</span>
+        <span class="muted">点击会话查看详情/历史，可删除/导出</span>
       </div>
       <div id="sessions-list"></div>
       <div class="toolbar" id="sessions-pager"></div>
@@ -82,11 +84,13 @@
           <div class="row" style="justify-content:space-between">
             <strong id="sd-id"></strong>
             <div class="row">
+              <button class="primary" id="sd-history" onclick="toggleSessionView()">查看对话历史</button>
               <button class="primary" id="sd-export">导出 JSON</button>
               <button class="danger" id="sd-delete">删除会话</button>
             </div>
           </div>
           <pre id="sd-summary"></pre>
+          <pre id="sd-history-content" class="hidden"></pre>
         </div>
       </div>
     </section>
@@ -180,9 +184,14 @@
     sessCursor = cursor || '';
     const u = document.getElementById('s-user').value.trim();
     const q = document.getElementById('s-q').value.trim();
+    const start = document.getElementById('s-start').value;
+    const end = document.getElementById('s-end').value;
     const l = document.getElementById('s-limit').value.trim();
     const qs = new URLSearchParams();
-    if (u) qs.set('user_id', u); if (q) qs.set('q', q); if (l) qs.set('limit', l);
+    if (u) qs.set('user_id', u); if (q) qs.set('q', q);
+    if (start) qs.set('start_time', start);
+    if (end) qs.set('end_time', end);
+    if (l) qs.set('limit', l);
     if (sessCursor) qs.set('cursor', sessCursor);
     try {
       const d = await api('/sessions?' + qs.toString());
@@ -200,15 +209,46 @@
     } catch(e){ setStatus('错误: ' + e.message); }
   }
 
+  let currentSessionId = '';
+  let showingHistory = false;
+
   async function showSession(id){
+    currentSessionId = id;
+    showingHistory = false;
     try {
       const d = await api('/sessions/' + encodeURIComponent(id));
       document.getElementById('sd-id').textContent = id;
       document.getElementById('sd-summary').textContent = JSON.stringify(d, null, 2);
+      document.getElementById('sd-summary').classList.remove('hidden');
+      document.getElementById('sd-history-content').classList.add('hidden');
+      document.getElementById('sd-history').textContent = '查看对话历史';
       document.getElementById('sd-export').onclick = () => location.href = '/admin/api/sessions/' + encodeURIComponent(id) + '/export?' + tokenQS();
       document.getElementById('sd-delete').onclick = () => delSession(id);
       document.getElementById('session-detail').classList.remove('hidden');
     } catch(e){ setStatus('错误: ' + e.message); }
+  }
+
+  async function loadSessionHistory(id){
+    try {
+      const d = await api('/sessions/' + encodeURIComponent(id) + '/history');
+      document.getElementById('sd-history-content').textContent = JSON.stringify(d, null, 2);
+    } catch(e){ setStatus('加载历史失败: ' + e.message); }
+  }
+
+  function toggleSessionView(){
+    showingHistory = !showingHistory;
+    if (showingHistory) {
+      document.getElementById('sd-summary').classList.add('hidden');
+      document.getElementById('sd-history-content').classList.remove('hidden');
+      document.getElementById('sd-history').textContent = '查看摘要';
+      if (!document.getElementById('sd-history-content').textContent.trim()) {
+        loadSessionHistory(currentSessionId);
+      }
+    } else {
+      document.getElementById('sd-summary').classList.remove('hidden');
+      document.getElementById('sd-history-content').classList.add('hidden');
+      document.getElementById('sd-history').textContent = '查看对话历史';
+    }
   }
 
   async function delSession(id){

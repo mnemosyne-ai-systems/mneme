@@ -43,6 +43,7 @@ func (h *AdminHandler) Register(r *mux.Router) {
 	r.HandleFunc("/users/{user_id}", h.DeleteUser).Methods(http.MethodDelete)
 	r.HandleFunc("/sessions", h.SearchSessions).Methods(http.MethodGet)
 	r.HandleFunc("/sessions/{session_id}", h.GetSession).Methods(http.MethodGet)
+	r.HandleFunc("/sessions/{session_id}/history", h.GetSessionHistory).Methods(http.MethodGet)
 	r.HandleFunc("/sessions/{session_id}/export", h.ExportSession).Methods(http.MethodGet)
 	r.HandleFunc("/sessions/{session_id}", h.DeleteSession).Methods(http.MethodDelete)
 	r.HandleFunc("/sessions/summarize", h.SummarizeSessions).Methods(http.MethodPost)
@@ -316,6 +317,49 @@ func (h *AdminHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, sum)
+}
+
+// GetSessionHistory 处理 GET /admin/api/sessions/{session_id}/history（获取会话完整对话历史）。
+func (h *AdminHandler) GetSessionHistory(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(r) {
+		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid admin token")
+		return
+	}
+	tenant := h.tenant(r)
+	if tenant == "" {
+		badRequest(w, CodeMissingTenant, "missing X-Tenant-ID header")
+		return
+	}
+	sessionID := mux.Vars(r)["session_id"]
+	if h.sessions == nil {
+		writeError(w, http.StatusNotFound, CodeNotFound, "session store not configured")
+		return
+	}
+	sum, err := h.sessions.GetSummary(r.Context(), tenant, sessionID)
+	if err != nil {
+		logger.FromContext(r.Context()).WithError(err).Error("admin get session failed")
+		internalError(w, "failed to read session")
+		return
+	}
+	if sum == nil {
+		writeError(w, http.StatusNotFound, CodeNotFound, "session not found")
+		return
+	}
+	// 从 ClickHouse 读取完整历史消息
+	var history []models.HistoryMessage
+	if h.sessions != nil {
+		// 这里需要通过存储层查询，暂时返回摘要信息
+		// TODO: 实现从 ClickHouse 查询该 session_id 的所有消息
+	}
+	writeOK(w, map[string]interface{}{
+		"session_id":    sum.SessionID,
+		"user_id":       sum.UserID,
+		"summary":       sum.Summary,
+		"message_count": sum.MessageCount,
+		"started_at":    sum.StartedAt,
+		"ended_at":      sum.EndedAt,
+		"history":       history,
+	})
 }
 
 // ExportSession 处理 GET /admin/api/sessions/{session_id}/export。
