@@ -37,6 +37,10 @@ redis:
   dial_timeout: 5s
   pool_size: 20
 
+cache:
+  session_ttl: 0       # 会话缓存 TTL，0 = 永不过期；例: 720h (30天)
+  profile_ttl: 0       # 用户画像缓存 TTL，0 = 永不过期；例: 720h (30天)
+
 consumer:
   history_enabled: true
   traces_enabled: true

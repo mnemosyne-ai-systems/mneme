@@ -128,7 +128,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		Memory:  cfg.Pulsar.Topics.Memory,
 	}
 	ingest := service.NewIngestService(producer, topics)
-	profileStore := service.NewRedisProfileStore(redisClient, app.inserter, 0)
+	profileStore := service.NewRedisProfileStore(redisClient, app.inserter, cfg.Cache.ProfileTTL)
 	extractor := service.NewLLMExtractor(service.LLMConfig{
 		Enabled:   cfg.Memory.LLM.Enabled,
 		Endpoint:  cfg.Memory.LLM.Endpoint,
@@ -200,7 +200,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			app.cleanup(ctx)
 			return nil, err
 		}
-		app.sessionStore = service.NewRedisSessionSummaryStore(redisClient, app.inserter, 0)
+		app.sessionStore = service.NewRedisSessionSummaryStore(redisClient, app.inserter, cfg.Cache.SessionTTL)
 		app.sessionConsumer = consumer.NewSessionSummaryConsumer(c, extractor, app.sessionStore, consumer.SessionSummaryConsumerOptions{
 			Topic:                 topics.History,
 			SummarizeInterval:     cfg.Consumer.SessionSummaryInterval,

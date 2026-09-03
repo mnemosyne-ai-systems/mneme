@@ -72,6 +72,29 @@ func TestEnvOverride(t *testing.T) {
 	}
 }
 
+func TestCacheConfig(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	content := `
+cache:
+  session_ttl: 1h
+  profile_ttl: 2h
+`
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Cache.SessionTTL != time.Hour {
+		t.Errorf("session_ttl = %v, want 1h", cfg.Cache.SessionTTL)
+	}
+	if cfg.Cache.ProfileTTL != 2*time.Hour {
+		t.Errorf("profile_ttl = %v, want 2h", cfg.Cache.ProfileTTL)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	c := &Config{}
 	if err := c.Validate(); err == nil {

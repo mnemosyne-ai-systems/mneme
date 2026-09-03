@@ -15,6 +15,7 @@ type Config struct {
 	Pulsar      PulsarConfig      `mapstructure:"pulsar"`
 	ClickHouse  ClickHouseConfig  `mapstructure:"clickhouse"`
 	Redis       RedisConfig       `mapstructure:"redis"`
+	Cache       CacheConfig       `mapstructure:"cache"`
 	Consumer    ConsumerConfig    `mapstructure:"consumer"`
 	Memory      MemoryConfig      `mapstructure:"memory"`
 	FileWatcher FileWatcherConfig `mapstructure:"filewatcher"`
@@ -79,6 +80,12 @@ type RedisConfig struct {
 	DB          int           `mapstructure:"db"`
 	DialTimeout time.Duration `mapstructure:"dial_timeout"`
 	PoolSize    int           `mapstructure:"pool_size"`
+}
+
+// CacheConfig 热存储 TTL 配置（0 = 永不过期）。
+type CacheConfig struct {
+	SessionTTL time.Duration `mapstructure:"session_ttl"`
+	ProfileTTL time.Duration `mapstructure:"profile_ttl"`
 }
 
 // ConsumerConfig 消费者开关与窗口配置。
@@ -294,6 +301,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("redis.db", 0)
 	v.SetDefault("redis.dial_timeout", 5*time.Second)
 	v.SetDefault("redis.pool_size", 20)
+
+	v.SetDefault("cache.session_ttl", 0)
+	v.SetDefault("cache.profile_ttl", 0)
 
 	v.SetDefault("consumer.history_enabled", true)
 	v.SetDefault("consumer.traces_enabled", true)
