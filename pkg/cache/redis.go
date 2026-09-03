@@ -81,3 +81,17 @@ const DeletedField = "_deleted"
 func AuditKey(tenant string) string {
 	return fmt.Sprintf("%s:audit:%s", KeyPrefix, tenant)
 }
+
+// UsersIndexKey 返回用户索引 ZSET Key（按 updated_at 排序）：
+// mnemosyne:mneme:users:{tenant}
+// member = entity_id, score = updated_at unix ms
+func UsersIndexKey(tenant string) string {
+	return fmt.Sprintf("%s:users:%s", KeyPrefix, tenant)
+}
+
+// SessionsIndexKey 返回会话索引 ZSET Key（按 ended_at 排序）：
+// mnemosyne:mneme:sessions:{tenant}
+// member = session_id, score = ended_at unix ms
+func SessionsIndexKey(tenant string) string {
+	return fmt.Sprintf("%s:sessions:%s", KeyPrefix, tenant)
+}

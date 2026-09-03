@@ -84,8 +84,10 @@ type RedisConfig struct {
 
 // CacheConfig 热存储 TTL 配置（0 = 永不过期）。
 type CacheConfig struct {
-	SessionTTL time.Duration `mapstructure:"session_ttl"`
-	ProfileTTL time.Duration `mapstructure:"profile_ttl"`
+	SessionTTL  time.Duration `mapstructure:"session_ttl"`
+	ProfileTTL  time.Duration `mapstructure:"profile_ttl"`
+	// UseZSetIndex 是否启用 ZSET 索引替代 SCAN（实验性，默认关闭）。
+	UseZSetIndex bool `mapstructure:"use_zset_index"`
 }
 
 // ConsumerConfig 消费者开关与窗口配置。
@@ -304,6 +306,7 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("cache.session_ttl", 0)
 	v.SetDefault("cache.profile_ttl", 0)
+	v.SetDefault("cache.use_zset_index", false)
 
 	v.SetDefault("consumer.history_enabled", true)
 	v.SetDefault("consumer.traces_enabled", true)

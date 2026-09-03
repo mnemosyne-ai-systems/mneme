@@ -55,32 +55,38 @@ type SessionSearchOptions struct {
 
 // RedisSessionSummaryStore 使用 Redis Hash 保存会话总结，并把带版本号的快照写入 ClickHouse。
 type RedisSessionSummaryStore struct {
-	client   redis.UniversalClient
-	inserter storage.BatchInserter
-	ttl      time.Duration
+	client       redis.UniversalClient
+	inserter     storage.BatchInserter
+	ttl          time.Duration
+	useZSetIndex bool
 }
 
 // NewRedisSessionSummaryStore 创建会话总结存储。inserter 可为 nil（仅写 Redis）。
-func NewRedisSessionSummaryStore(client redis.UniversalClient, inserter storage.BatchInserter, ttl time.Duration) *RedisSessionSummaryStore {
-	return &RedisSessionSummaryStore{client: client, inserter: inserter, ttl: ttl}
+func NewRedisSessionSummaryStore(client redis.UniversalClient, inserter storage.BatchInserter, ttl time.Duration, useZSetIndex bool) *RedisSessionSummaryStore {
+	return &RedisSessionSummaryStore{client: client, inserter: inserter, ttl: ttl, useZSetIndex: useZSetIndex}
 }
 
 // SaveSessionInfo 在消息到达时立即写入会话基本信息（不触发 LLM，不写 ClickHouse），
 // 保证管理后台可立即检索到该会话。后续 SaveSummary 会覆盖并追加总结字段。
 func (s *RedisSessionSummaryStore) SaveSessionInfo(ctx context.Context, tenant, sessionID, userID string, startedAt, endedAt time.Time) error {
 	key := cache.SessionKey(tenant, sessionID)
+	now := time.Now().UTC()
 	fields := map[string]interface{}{
 		"session_id":  sessionID,
 		"tenant_id":   tenant,
 		"user_id":     userID,
 		"started_at":  startedAt.UTC().Format(time.RFC3339),
 		"ended_at":    endedAt.UTC().Format(time.RFC3339),
-		"_updated_at": time.Now().UTC().Format(time.RFC3339),
+		"_updated_at": now.Format(time.RFC3339),
 	}
 	pipe := s.client.TxPipeline()
 	pipe.HSet(ctx, key, fields)
 	if s.ttl > 0 {
 		pipe.Expire(ctx, key, s.ttl)
+	}
+	if s.useZSetIndex {
+		score := float64(endedAt.UnixMilli())
+		pipe.ZAdd(ctx, cache.SessionsIndexKey(tenant), redis.Z{Score: score, Member: sessionID})
 	}
 	_, err := pipe.Exec(ctx)
 	return err
@@ -117,6 +123,10 @@ func (s *RedisSessionSummaryStore) SaveSummary(ctx context.Context, summary *mod
 	pipe.HSet(ctx, key, fields)
 	if s.ttl > 0 {
 		pipe.Expire(ctx, key, s.ttl)
+	}
+	if s.useZSetIndex {
+		score := float64(summary.EndedAt.UnixMilli())
+		pipe.ZAdd(ctx, cache.SessionsIndexKey(summary.TenantID), redis.Z{Score: score, Member: summary.SessionID})
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return version, fmt.Errorf("session store: hset: %w", err)
@@ -168,6 +178,7 @@ func (s *RedisSessionSummaryStore) ListSessionsByUser(ctx context.Context, tenan
 }
 
 // SearchSessions 检索会话总结（管理后台），支持按 user_id 与关键字过滤、游标分页、按时间倒序、时间范围过滤。
+// 启用 ZSET 索引时走 ZREVRANGEBYSCORE，否则回退 SCAN。
 func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant string, opts SessionSearchOptions) ([]*models.SessionSummary, string, error) {
 	limit := opts.Limit
 	if limit <= 0 {
@@ -188,6 +199,12 @@ func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant st
 			return nil, "", fmt.Errorf("invalid end_time: %w", err)
 		}
 	}
+
+	if s.useZSetIndex {
+		return s.searchSessionsZSet(ctx, tenant, opts, limit, q, startTime, endTime)
+	}
+
+	// 回退 SCAN
 	iter := s.client.Scan(ctx, 0, cache.SessionKey(tenant, "*"), 0).Iterator()
 	var all []*models.SessionSummary
 	for iter.Next(ctx) {
@@ -237,6 +254,63 @@ func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant st
 		next = encodeCursor(end)
 	}
 	return page, next, nil
+}
+
+// searchSessionsZSet 使用 ZSET 索引查询会话（按 ended_at 倒序）。
+func (s *RedisSessionSummaryStore) searchSessionsZSet(ctx context.Context, tenant string, opts SessionSearchOptions, limit int, q string, startTime, endTime time.Time) ([]*models.SessionSummary, string, error) {
+	offset := decodeCursor(opts.Cursor)
+	idxKey := cache.SessionsIndexKey(tenant)
+
+	// 计算分数范围
+	minScore := "-inf"
+	maxScore := "+inf"
+	if !endTime.IsZero() {
+		maxScore = fmt.Sprintf("%d", endTime.UnixMilli())
+	}
+	if !startTime.IsZero() {
+		minScore = fmt.Sprintf("%d", startTime.UnixMilli())
+	}
+
+	// ZREVRANGEBYSCORE 返回 member 列表（按 ended_at 倒序）
+	members, err := s.client.ZRevRangeByScore(ctx, idxKey, &redis.ZRangeBy{
+		Min:    minScore,
+		Max:    maxScore,
+		Offset: int64(offset),
+		Count:  int64(limit + 1), // 多取 1 个判断是否有下一页
+	}).Result()
+	if err != nil {
+		return nil, "", fmt.Errorf("session store: zrevrangebyscore: %w", err)
+	}
+
+	// 超出 limit 说明有下一页
+	next := ""
+	if len(members) > limit {
+		members = members[:limit]
+		next = encodeCursor(offset + limit)
+	}
+
+	var all []*models.SessionSummary
+	for _, sessionID := range members {
+		key := cache.SessionKey(tenant, sessionID)
+		res, err := s.client.HGetAll(ctx, key).Result()
+		if err != nil {
+			return nil, "", fmt.Errorf("session store: hgetall: %w", err)
+		}
+		if len(res) == 0 || res[cache.DeletedField] == "1" {
+			continue
+		}
+		if opts.UserID != "" && res["user_id"] != opts.UserID {
+			continue
+		}
+		if q != "" {
+			hay := strings.ToLower(res["session_id"] + " " + res["summary"])
+			if !strings.Contains(hay, q) {
+				continue
+			}
+		}
+		all = append(all, sessionFromHash(res))
+	}
+	return all, next, nil
 }
 
 // DeleteSession 软删除：标记 _deleted（可恢复）。

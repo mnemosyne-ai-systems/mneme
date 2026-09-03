@@ -73,27 +73,34 @@ type RedisProfileStore struct {
 	client   redis.UniversalClient
 	inserter storage.BatchInserter
 	ttl      time.Duration
+	useZSetIndex bool
 }
 
 // NewRedisProfileStore 创建画像存储。inserter 可为 nil（仅写 Redis）。
-func NewRedisProfileStore(client redis.UniversalClient, inserter storage.BatchInserter, ttl time.Duration) *RedisProfileStore {
-	return &RedisProfileStore{client: client, inserter: inserter, ttl: ttl}
+func NewRedisProfileStore(client redis.UniversalClient, inserter storage.BatchInserter, ttl time.Duration, useZSetIndex bool) *RedisProfileStore {
+	return &RedisProfileStore{client: client, inserter: inserter, ttl: ttl, useZSetIndex: useZSetIndex}
 }
 
 // SaveUserInfo 在消息到达时立即写入最小用户信息（不触发 LLM，不写 ClickHouse），
 // 保证管理后台可以立即检索到该用户。后续 SaveProfile 会覆盖并追加完整画像。
 func (s *RedisProfileStore) SaveUserInfo(ctx context.Context, tenant, userID string) error {
 	key := cache.MemoryKey(tenant, models.EntityTypeUser, userID)
+	now := time.Now().UTC()
+	updatedAt := now.Format(time.RFC3339)
 	fields := map[string]interface{}{
 		"entity_id":   userID,
 		"entity_type": models.EntityTypeUser,
 		"tenant_id":   tenant,
-		"_updated_at": time.Now().UTC().Format(time.RFC3339),
+		"_updated_at": updatedAt,
 	}
 	pipe := s.client.TxPipeline()
 	pipe.HSet(ctx, key, fields)
 	if s.ttl > 0 {
 		pipe.Expire(ctx, key, s.ttl)
+	}
+	if s.useZSetIndex {
+		score := float64(now.UnixMilli())
+		pipe.ZAdd(ctx, cache.UsersIndexKey(tenant), redis.Z{Score: score, Member: userID})
 	}
 	_, err := pipe.Exec(ctx)
 	return err
@@ -112,17 +119,24 @@ func (s *RedisProfileStore) SaveProfile(ctx context.Context, tenant, entityType,
 		return 0, fmt.Errorf("profile store: incr version: %w", err)
 	}
 
+	now := time.Now().UTC()
+	updatedAt := now.Format(time.RFC3339)
+
 	fields := make(map[string]interface{}, len(profile)+1)
 	for k, v := range profile {
 		fields[k] = v
 	}
 	fields["_version"] = version
-	fields["_updated_at"] = time.Now().UTC().Format(time.RFC3339)
+	fields["_updated_at"] = updatedAt
 
 	pipe := s.client.TxPipeline()
 	pipe.HSet(ctx, key, fields)
 	if s.ttl > 0 {
 		pipe.Expire(ctx, key, s.ttl)
+	}
+	if s.useZSetIndex && entityType == models.EntityTypeUser {
+		score := float64(now.UnixMilli())
+		pipe.ZAdd(ctx, cache.UsersIndexKey(tenant), redis.Z{Score: score, Member: entityID})
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return version, fmt.Errorf("profile store: hset: %w", err)
@@ -162,11 +176,18 @@ func (s *RedisProfileStore) GetProfile(ctx context.Context, tenant, entityType, 
 }
 
 // ListProfiles 扫描该租户下的实体 Hash，返回画像视图与下一页游标（用于管理后台分页）。
+// 启用 ZSET 索引时走 ZREVRANGEBYSCORE，否则回退 SCAN。
 func (s *RedisProfileStore) ListProfiles(ctx context.Context, tenant, entityType string, opts ListOptions) ([]*EntityProfile, string, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
 	}
+
+	if s.useZSetIndex && entityType == models.EntityTypeUser {
+		return s.listProfilesZSet(ctx, tenant, opts)
+	}
+
+	// 回退 SCAN
 	iter := s.client.Scan(ctx, 0, cache.MemoryKey(tenant, entityType, "*"), 0).Iterator()
 	var keys []string
 	for iter.Next(ctx) {
@@ -207,6 +228,57 @@ func (s *RedisProfileStore) ListProfiles(ctx context.Context, tenant, entityType
 	next := ""
 	if end < len(keys) {
 		next = encodeCursor(end)
+	}
+	return out, next, nil
+}
+
+// listProfilesZSet 使用 ZSET 索引查询用户画像（按 updated_at 倒序）。
+func (s *RedisProfileStore) listProfilesZSet(ctx context.Context, tenant string, opts ListOptions) ([]*EntityProfile, string, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	offset := decodeCursor(opts.Cursor)
+	idxKey := cache.UsersIndexKey(tenant)
+
+	// ZREVRANGEBYSCORE 返回 member 列表（倒序）
+	members, err := s.client.ZRevRangeByScore(ctx, idxKey, &redis.ZRangeBy{
+		Min:    "-inf",
+		Max:    "+inf",
+		Offset: int64(offset),
+		Count:  int64(limit + 1), // 多取 1 个判断是否有下一页
+	}).Result()
+	if err != nil {
+		return nil, "", fmt.Errorf("profile store: zrevrangebyscore: %w", err)
+	}
+
+	// 超出 limit 说明有下一页
+	next := ""
+	if len(members) > limit {
+		members = members[:limit]
+		next = encodeCursor(offset + limit)
+	}
+
+	out := make([]*EntityProfile, 0, len(members))
+	for _, userID := range members {
+		key := cache.MemoryKey(tenant, models.EntityTypeUser, userID)
+		res, err := s.client.HGetAll(ctx, key).Result()
+		if err != nil {
+			return nil, "", fmt.Errorf("profile store: hgetall: %w", err)
+		}
+		if len(res) == 0 || res[cache.DeletedField] == "1" {
+			continue
+		}
+		cp := make(map[string]string, len(res))
+		for k, v := range res {
+			cp[k] = v
+		}
+		out = append(out, &EntityProfile{
+			TenantID:   tenant,
+			EntityType: models.EntityTypeUser,
+			EntityID:   userID,
+			Profile:    cp,
+		})
 	}
 	return out, next, nil
 }
