@@ -111,6 +111,9 @@ ClickHouse 作为冷存储支撑分析与长期保留。两条萃取管线（用
 | `consumer.session_summary_max_messages` | `2000` | 单会话缓冲上限 |
 | `memory.llm.enabled` | `false` | 开启后画像与总结均走 LLM |
 | `adapter.mode` | `http` | file-adapter 投递方式：`http`（默认）或 `pulsar` |
+| `cache.session_ttl` | `720h` | 会话缓存 TTL（0=永不过期，建议 720h） |
+| `cache.profile_ttl` | `720h` | 用户画像缓存 TTL（0=永不过期，建议 720h） |
+| `cache.use_zset_index` | `false` | 启用 ZSET 索引替代 SCAN（实验性） |
 
 ---
 
@@ -122,6 +125,8 @@ ClickHouse 作为冷存储支撑分析与长期保留。两条萃取管线（用
 | POST | `/api/v1/history/batch` | 批量对话历史（file-adapter 默认走这条） |
 | POST | `/api/v1/traces` | Agent 轨迹 |
 | POST | `/api/v1/memory/events` | 显式记忆事件 |
+| POST | `/api/v1/sessions` | 创建会话（先写 CH 再写 Redis） |
+| POST | `/api/v1/users` | 创建用户（先写 CH 再写 Redis） |
 | GET | `/api/v1/memory/{entity_type}/{entity_id}` | 读取实体画像 |
 | GET | `/api/v1/sessions/{session_id}` | 读取会话总结 |
 | GET | `/api/v1/users/{user_id}` | **聚合**：用户画像 + 其全部会话列表 |
@@ -194,3 +199,31 @@ DeleteSessionsByUser/PurgeSessionsByUser`，以及 `AuditStore.Append/List`
 后续消费者定时执行萃取时，会用完整画像/总结覆盖基本信息。
 
 软删除通过热存储 Hash 的 `_deleted` 标记实现，读取时自动跳过；冷存储 ClickHouse 仍保留原始快照（由 TTL/归档策略处理）。
+
+---
+
+## 9. Redis Cluster / Dragonfly 兼容性
+
+### 9.1 兼容性结论
+**完全兼容**，需开启 `cache.use_zset_index: true` 并使用 `redis.UniversalClient` 接口。
+
+### 9.2 Key 设计兼容性
+所有 Key 以租户为前缀（`mneme:memory:{tenant}:...`、`mneme:session:{tenant}:...` 等），**同租户所有 Key 天然落在同一哈希槽**，保证：
+- 单键操作（`HSet`/`HGetAll`/`Incr`/`Expire`/`Del`/`ZAdd`/`ZRevRangeByScore`）完全兼容
+- 多键 Pipeline / 事务（同租户 Key）安全执行
+- **SCAN 受限**：Cluster 模式仅扫描本节点，**必须开启 ZSET 索引** 避免全量扫描
+
+### 9.3 部署建议
+```yaml
+# configs/config.yaml
+redis:
+  addr: "node1:6379,node2:6379,node3:6379"  # Cluster 地址
+  cluster_mode: true
+cache:
+  use_zset_index: true   # 必须开启，避免 SCAN
+  session_ttl: 720h
+  profile_ttl: 720h
+```
+
+### 9.4 Dragonfly 兼容
+Dragonfly 原生兼容 Redis Cluster 协议，**零代码变更**即可替换 Redis Cluster，多线程架构提供更高吞吐。
