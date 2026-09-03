@@ -42,6 +42,8 @@ type ProfileStore interface {
 	// SaveUserInfo 在消息到达时立即写入最小用户信息（不触发 LLM），
 	// 保证管理后台可以立即检索到该用户。后续 SaveProfile 会覆盖并追加完整画像。
 	SaveUserInfo(ctx context.Context, tenant, userID string) error
+	// CreateProfile 创建用户画像（先写 ClickHouse，再写 Redis，保证一致性）。
+	CreateProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) error
 	SaveProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) (int64, error)
 	GetProfile(ctx context.Context, tenant, entityType, entityID string) (map[string]string, error)
 	// ListProfiles 列出某租户下某类型实体的画像（用于管理后台浏览），返回结果与下一页游标。
@@ -70,9 +72,9 @@ type EntityProfile struct {
 
 // RedisProfileStore 使用 Redis Hash 保存画像，并把带版本号的快照写入 ClickHouse。
 type RedisProfileStore struct {
-	client   redis.UniversalClient
-	inserter storage.BatchInserter
-	ttl      time.Duration
+	client       redis.UniversalClient
+	inserter     storage.BatchInserter
+	ttl          time.Duration
 	useZSetIndex bool
 }
 
@@ -160,6 +162,59 @@ func (s *RedisProfileStore) SaveProfile(ctx context.Context, tenant, entityType,
 		}
 	}
 	return version, nil
+}
+
+// CreateProfile 创建用户画像（先写 ClickHouse，再写 Redis，保证一致性）。
+func (s *RedisProfileStore) CreateProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) error {
+	if len(profile) == 0 {
+		return nil
+	}
+	// 先写 ClickHouse（源头真相）
+	if s.inserter != nil {
+		row := &models.EntityMemory{
+			EntityID:   entityID,
+			TenantID:   tenant,
+			EntityType: entityType,
+			Profile:    "{}", // 空画像，后续 SaveProfile 覆盖
+			Version:    0,
+			UpdatedAt:  time.Now().UTC(),
+		}
+		if err := s.inserter.InsertMemory(ctx, []*models.EntityMemory{row}); err != nil {
+			return fmt.Errorf("profile store: insert clickhouse: %w", err)
+		}
+	}
+	// 再写 Redis（热存储）
+	key := cache.MemoryKey(tenant, entityType, entityID)
+	verKey := cache.MemoryVersionKey(tenant, entityType, entityID)
+
+	version, err := s.client.Incr(ctx, verKey).Result()
+	if err != nil {
+		return fmt.Errorf("profile store: incr version: %w", err)
+	}
+
+	now := time.Now().UTC()
+	updatedAt := now.Format(time.RFC3339)
+
+	fields := make(map[string]interface{}, len(profile)+1)
+	for k, v := range profile {
+		fields[k] = v
+	}
+	fields["_version"] = version
+	fields["_updated_at"] = updatedAt
+
+	pipe := s.client.TxPipeline()
+	pipe.HSet(ctx, key, fields)
+	if s.ttl > 0 {
+		pipe.Expire(ctx, key, s.ttl)
+	}
+	if s.useZSetIndex && entityType == models.EntityTypeUser {
+		score := float64(time.Now().UTC().UnixMilli())
+		pipe.ZAdd(ctx, cache.UsersIndexKey(tenant), redis.Z{Score: score, Member: entityID})
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("profile store: hset: %w", err)
+	}
+	return nil
 }
 
 // GetProfile 从 Redis 读取画像。
@@ -319,21 +374,6 @@ func NewMemoryProfileStore(inserter storage.BatchInserter) *MemoryProfileStore {
 	}
 }
 
-// SaveUserInfo 在消息到达时立即写入最小用户信息（不触发 LLM）。
-func (s *MemoryProfileStore) SaveUserInfo(_ context.Context, tenant, userID string) error {
-	key := cache.MemoryKey(tenant, models.EntityTypeUser, userID)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.profiles[key]; !ok {
-		s.profiles[key] = map[string]string{
-			"entity_id":   userID,
-			"entity_type": models.EntityTypeUser,
-			"tenant_id":   tenant,
-		}
-	}
-	return nil
-}
-
 // SaveProfile 保存画像并递增版本号。
 func (s *MemoryProfileStore) SaveProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) (int64, error) {
 	if len(profile) == 0 {
@@ -349,6 +389,7 @@ func (s *MemoryProfileStore) SaveProfile(ctx context.Context, tenant, entityType
 		cp[k] = v
 	}
 	cp["_version"] = fmt.Sprintf("%d", version)
+	cp["_updated_at"] = time.Now().UTC().Format(time.RFC3339)
 	s.profiles[key] = cp
 	s.mu.Unlock()
 
@@ -370,6 +411,56 @@ func (s *MemoryProfileStore) SaveProfile(ctx context.Context, tenant, entityType
 		}
 	}
 	return version, nil
+}
+
+// CreateProfile 创建用户画像（先写 ClickHouse，再写内存，保证一致性）。
+func (s *MemoryProfileStore) CreateProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) error {
+	if len(profile) == 0 {
+		return nil
+	}
+	// 先写 ClickHouse
+	if s.inserter != nil {
+		row := &models.EntityMemory{
+			EntityID:   entityID,
+			TenantID:   tenant,
+			EntityType: entityType,
+			Profile:    "{}",
+			Version:    0,
+			UpdatedAt:  time.Now().UTC(),
+		}
+		if err := s.inserter.InsertMemory(ctx, []*models.EntityMemory{row}); err != nil {
+			return err
+		}
+	}
+	// 再写内存
+	key := cache.MemoryKey(tenant, entityType, entityID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.versions[key]++
+	version := s.versions[key]
+	cp := make(map[string]string, len(profile)+1)
+	for k, v := range profile {
+		cp[k] = v
+	}
+	cp["_version"] = fmt.Sprintf("%d", version)
+	cp["_updated_at"] = time.Now().UTC().Format(time.RFC3339)
+	s.profiles[key] = cp
+	return nil
+}
+
+// SaveUserInfo 在消息到达时立即写入最小用户信息（不触发 LLM）。
+func (s *MemoryProfileStore) SaveUserInfo(_ context.Context, tenant, userID string) error {
+	key := cache.MemoryKey(tenant, models.EntityTypeUser, userID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.profiles[key]; !ok {
+		s.profiles[key] = map[string]string{
+			"entity_id":   userID,
+			"entity_type": models.EntityTypeUser,
+			"tenant_id":   tenant,
+		}
+	}
+	return nil
 }
 
 // GetProfile 读取画像。

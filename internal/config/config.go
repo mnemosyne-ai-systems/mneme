@@ -304,8 +304,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("redis.dial_timeout", 5*time.Second)
 	v.SetDefault("redis.pool_size", 20)
 
-	v.SetDefault("cache.session_ttl", 0)
-	v.SetDefault("cache.profile_ttl", 0)
+	v.SetDefault("cache.session_ttl", 720*time.Hour)
+	v.SetDefault("cache.profile_ttl", 720*time.Hour)
 	v.SetDefault("cache.use_zset_index", false)
 
 	v.SetDefault("consumer.history_enabled", true)

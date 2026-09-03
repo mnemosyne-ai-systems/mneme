@@ -54,9 +54,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 		v1.HandleFunc("/memory/{entity_type}/{entity_id}", opts.Memory.GetProfile).Methods(http.MethodGet)
 	}
 	if opts.Sessions != nil {
+		v1.HandleFunc("/sessions", opts.Sessions.CreateSession).Methods(http.MethodPost)
 		v1.HandleFunc("/sessions/{session_id}", opts.Sessions.GetSummary).Methods(http.MethodGet)
 	}
 	if opts.Users != nil {
+		v1.HandleFunc("/users", opts.Users.CreateUser).Methods(http.MethodPost)
 		v1.HandleFunc("/users/{user_id}", opts.Users.GetContext).Methods(http.MethodGet)
 	}
 

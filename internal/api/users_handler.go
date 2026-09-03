@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -16,7 +17,7 @@ type UsersHandler struct {
 	sessions service.SessionSummaryStore
 }
 
-// NewUsersHandler 创建 handler。任一 reader 可为 nil（对应部分返回空）。
+// NewUsersHandler 创建 handler。任一 store 可为 nil（对应部分返回空/404）。
 func NewUsersHandler(profiles service.ProfileStore, sessions service.SessionSummaryStore) *UsersHandler {
 	return &UsersHandler{profiles: profiles, sessions: sessions}
 }
@@ -67,4 +68,37 @@ func (h *UsersHandler) GetContext(w http.ResponseWriter, r *http.Request) {
 		"profile":  profile,
 		"sessions": sessions,
 	})
+}
+
+// CreateUser 处理 POST /api/v1/users。
+func (h *UsersHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
+	tenant := tenantFrom(r)
+	if tenant == "" {
+		badRequest(w, CodeMissingTenant, "missing X-Tenant-ID header")
+		return
+	}
+	if h.profiles == nil {
+		writeError(w, http.StatusNotFound, CodeNotFound, "profile store not configured")
+		return
+	}
+
+	var req struct {
+		UserID  string                 `json:"user_id"`
+		Profile map[string]string      `json:"profile"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		badRequest(w, CodeInvalidJSON, "invalid json body: "+err.Error())
+		return
+	}
+	if req.UserID == "" {
+		badRequest(w, CodeMissingField, "missing user_id")
+		return
+	}
+
+	if err := h.profiles.CreateProfile(r.Context(), tenant, models.EntityTypeUser, req.UserID, req.Profile); err != nil {
+		logger.FromContext(r.Context()).WithError(err).Error("create user failed")
+		internalError(w, "failed to create user")
+		return
+	}
+	writeOK(w, map[string]interface{}{"user_id": req.UserID, "created_at": time.Now().UTC()})
 }

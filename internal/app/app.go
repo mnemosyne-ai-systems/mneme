@@ -251,7 +251,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		History:        api.NewHistoryHandler(ingest, profileStore, app.sessionStore),
 		Traces:         api.NewTracesHandler(ingest),
 		Memory:         api.NewMemoryHandler(ingest, profileStore),
-		Sessions:       api.NewSessionsHandler(app.sessionStore),
+		Sessions:       api.NewSessionsHandler(app.sessionStore, app.sessionStore),
 		Users:          api.NewUsersHandler(profileStore, app.sessionStore),
 		OpenAPI:        api.NewOpenAPIHandler(),
 		Health:         api.NewHealthHandler(app.healthCheckers()...),

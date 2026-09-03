@@ -376,13 +376,17 @@ func (s stubSummaryReader) GetSummary(_ context.Context, _, _ string) (*models.S
 	return s.summary, s.err
 }
 
-func newSessionsServer(reader SessionSummaryReader) http.Handler {
+func (s stubSummaryReader) CreateSession(_ context.Context, _ *models.SessionSummary) error {
+	return nil
+}
+
+func newSessionsServer(reader SessionSummaryReader, writer SessionSummaryWriter) http.Handler {
 	bus := messagebus.NewMemoryBus()
 	ingest := service.NewIngestService(bus, service.Topics{History: "h", Traces: "t", Memory: "m"})
 	return NewRouter(RouterOptions{
 		History:  NewHistoryHandler(ingest, nil, nil),
 		Memory:   NewMemoryHandler(ingest, nil),
-		Sessions: NewSessionsHandler(reader),
+		Sessions: NewSessionsHandler(reader, writer),
 		Health:   NewHealthHandler(),
 	})
 }
@@ -392,7 +396,7 @@ func TestGetSessionSummary(t *testing.T) {
 		SessionID: "s1", TenantID: "t1", UserID: "u1",
 		Summary: "讨论了部署方案", MessageCount: 4, Version: 2,
 	}
-	h := newSessionsServer(stubSummaryReader{summary: summary})
+	h := newSessionsServer(stubSummaryReader{summary: summary}, stubSummaryReader{summary: summary})
 	rr := doJSON(t, h, http.MethodGet, "/api/v1/sessions/s1", "", map[string]string{HeaderTenantID: "t1"})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rr.Code, rr.Body)
@@ -415,12 +419,12 @@ func TestGetSessionSummary(t *testing.T) {
 		t.Errorf("unconfigured status = %d", rr2.Code)
 	}
 	// 空总结
-	h3 := newSessionsServer(stubSummaryReader{summary: nil})
+	h3 := newSessionsServer(stubSummaryReader{summary: nil}, stubSummaryReader{summary: nil})
 	if rr := doJSON(t, h3, http.MethodGet, "/api/v1/sessions/s1", "", map[string]string{HeaderTenantID: "t"}); rr.Code != http.StatusNotFound {
 		t.Errorf("not found status = %d", rr.Code)
 	}
 	// 读取错误
-	h4 := newSessionsServer(stubSummaryReader{err: errors.New("boom")})
+	h4 := newSessionsServer(stubSummaryReader{err: errors.New("boom")}, stubSummaryReader{err: errors.New("boom")})
 	if rr := doJSON(t, h4, http.MethodGet, "/api/v1/sessions/s1", "", map[string]string{HeaderTenantID: "t"}); rr.Code != http.StatusInternalServerError {
 		t.Errorf("error status = %d", rr.Code)
 	}
@@ -457,6 +461,10 @@ func (s stubUserStore) PurgeProfile(_ context.Context, _, _, _ string) error {
 	return nil
 }
 
+func (s stubUserStore) CreateProfile(_ context.Context, _, _, _ string, _ map[string]string) error {
+	return nil
+}
+
 func (s stubUserStore) SaveSessionInfo(_ context.Context, _, _, _ string, _, _ time.Time) error {
 	return nil
 }
@@ -478,6 +486,10 @@ func (s stubUserStore) DeleteSession(_ context.Context, _, _ string) error {
 }
 
 func (s stubUserStore) PurgeSession(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (s stubUserStore) CreateSession(_ context.Context, _ *models.SessionSummary) error {
 	return nil
 }
 

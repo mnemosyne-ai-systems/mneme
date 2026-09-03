@@ -35,6 +35,8 @@ type SessionSummaryStore interface {
 	DeleteSessionsByUser(ctx context.Context, tenant, userID string) error
 	// PurgeSessionsByUser 硬删除某用户下的全部会话总结。
 	PurgeSessionsByUser(ctx context.Context, tenant, userID string) error
+	// CreateSession 创建会话（先写 ClickHouse，再写 Redis，保证一致性）。
+	CreateSession(ctx context.Context, summary *models.SessionSummary) error
 }
 
 // SessionSearchOptions 会话检索选项。
@@ -138,6 +140,55 @@ func (s *RedisSessionSummaryStore) SaveSummary(ctx context.Context, summary *mod
 		}
 	}
 	return version, nil
+}
+
+// CreateSession 创建会话（先写 ClickHouse，再写 Redis，保证一致性）。
+func (s *RedisSessionSummaryStore) CreateSession(ctx context.Context, summary *models.SessionSummary) error {
+	if err := summary.Validate(); err != nil {
+		return err
+	}
+	// 先写 ClickHouse（源头真相）
+	if s.inserter != nil {
+		if err := s.inserter.InsertSessionSummary(ctx, []*models.SessionSummary{summary}); err != nil {
+			return fmt.Errorf("session store: insert clickhouse: %w", err)
+		}
+	}
+	// 再写 Redis（热存储）
+	key := cache.SessionKey(summary.TenantID, summary.SessionID)
+	verKey := cache.SessionVersionKey(summary.TenantID, summary.SessionID)
+
+	version, err := s.client.Incr(ctx, verKey).Result()
+	if err != nil {
+		return fmt.Errorf("session store: incr version: %w", err)
+	}
+	summary.Version = version
+	summary.UpdatedAt = time.Now().UTC()
+
+	fields := map[string]interface{}{
+		"session_id":    summary.SessionID,
+		"tenant_id":     summary.TenantID,
+		"user_id":       summary.UserID,
+		"summary":       summary.Summary,
+		"message_count": summary.MessageCount,
+		"started_at":    summary.StartedAt.UTC().Format(time.RFC3339),
+		"ended_at":      summary.EndedAt.UTC().Format(time.RFC3339),
+		"_version":      version,
+		"_updated_at":   summary.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+
+	pipe := s.client.TxPipeline()
+	pipe.HSet(ctx, key, fields)
+	if s.ttl > 0 {
+		pipe.Expire(ctx, key, s.ttl)
+	}
+	if s.useZSetIndex {
+		score := float64(summary.EndedAt.UnixMilli())
+		pipe.ZAdd(ctx, cache.SessionsIndexKey(summary.TenantID), redis.Z{Score: score, Member: summary.SessionID})
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("session store: hset: %w", err)
+	}
+	return nil
 }
 
 // GetSummary 从 Redis 读取会话总结（已软删除的返回 nil）。
@@ -450,6 +501,30 @@ func (s *MemorySessionSummaryStore) SaveSummary(ctx context.Context, summary *mo
 		}
 	}
 	return version, nil
+}
+
+// CreateSession 创建会话（先写 ClickHouse，再写内存，保证一致性）。
+func (s *MemorySessionSummaryStore) CreateSession(ctx context.Context, summary *models.SessionSummary) error {
+	if err := summary.Validate(); err != nil {
+		return err
+	}
+	// 先写 ClickHouse
+	if s.inserter != nil {
+		if err := s.inserter.InsertSessionSummary(ctx, []*models.SessionSummary{summary}); err != nil {
+			return err
+		}
+	}
+	// 再写内存
+	key := cache.SessionKey(summary.TenantID, summary.SessionID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.versions[key]++
+	summary.Version = s.versions[key]
+	summary.UpdatedAt = time.Now().UTC()
+	cp := *summary
+	s.summaries[key] = &cp
+	s.deleted[key] = false
+	return nil
 }
 
 // GetSummary 读取总结（已软删除的返回 nil）。

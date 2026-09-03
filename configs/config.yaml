@@ -38,8 +38,8 @@ redis:
   pool_size: 20
 
 cache:
-  session_ttl: 0       # 会话缓存 TTL，0 = 永不过期；例: 720h (30天)
-  profile_ttl: 0       # 用户画像缓存 TTL，0 = 永不过期；例: 720h (30天)
+  session_ttl: 720h      # 会话缓存 TTL，0 = 永不过期；例: 720h (30天)，生产建议 720h
+  profile_ttl: 720h      # 用户画像缓存 TTL，0 = 永不过期；例: 720h (30天)，生产建议 720h
 
 consumer:
   history_enabled: true
