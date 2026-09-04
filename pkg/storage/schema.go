@@ -72,6 +72,22 @@ CREATE TABLE IF NOT EXISTS session_summary (
 ORDER BY (tenant_id, session_id)
 SETTINGS index_granularity = 8192`
 
+	// DDLSessionStatsHourly 会话统计按小时预聚合（用于管理后台快速聚合查询）。
+	DDLSessionStatsHourly = `
+CREATE TABLE IF NOT EXISTS session_stats_hourly (
+    tenant_id     String,
+    user_id       String,
+    hour          DateTime,
+    session_count UInt64,
+    msg_count     UInt64,
+    first_msg     DateTime,
+    last_msg      DateTime
+) ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(hour)
+ORDER BY (tenant_id, user_id, hour)
+TTL hour + INTERVAL 730 DAY
+SETTINGS index_granularity = 8192`
+
 	// DDLAuditLog 审计日志表（只追加，按时间倒序查询）。
 	DDLAuditLog = `
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -87,11 +103,27 @@ ORDER BY (tenant_id, at)
 PARTITION BY toYYYYMM(at)
 TTL at + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192`
+
+	// DDLUserProfileStatsHourly 用户画像统计按小时预聚合（用于管理后台用户画像质量监控）。
+	DDLUserProfileStatsHourly = `
+CREATE TABLE IF NOT EXISTS user_profile_stats_hourly (
+    tenant_id       String,
+    entity_type     String,
+    entity_id       String,
+    hour            DateTime,
+    profile_count   UInt64,
+    profile_size    UInt64,
+    version_max     UInt64
+) ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(hour)
+ORDER BY (tenant_id, entity_type, hour)
+TTL hour + INTERVAL 730 DAY
+SETTINGS index_granularity = 8192`
 )
 
 // SchemaStatements 返回按顺序执行的建表语句。
 func SchemaStatements() []string {
-	return []string{DDLHistoryMessage, DDLAgentTraces, DDLEntityMemory, DDLSessionSummary, DDLAuditLog}
+	return []string{DDLHistoryMessage, DDLAgentTraces, DDLEntityMemory, DDLSessionSummary, DDLSessionStatsHourly, DDLUserProfileStatsHourly, DDLAuditLog}
 }
 
 // DatabaseDDL 返回创建数据库的语句。

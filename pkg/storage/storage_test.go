@@ -11,8 +11,8 @@ import (
 
 func TestSchemaStatements(t *testing.T) {
 	stmts := SchemaStatements()
-	if len(stmts) != 5 {
-		t.Fatalf("want 5 statements, got %d", len(stmts))
+	if len(stmts) != 7 {
+		t.Fatalf("want 7 statements, got %d", len(stmts))
 	}
 	if !strings.Contains(stmts[0], "history_message") {
 		t.Error("missing history_message DDL")
@@ -26,7 +26,13 @@ func TestSchemaStatements(t *testing.T) {
 	if !strings.Contains(stmts[3], "session_summary") {
 		t.Error("missing session_summary DDL")
 	}
-	if !strings.Contains(stmts[4], "audit_log") {
+	if !strings.Contains(stmts[4], "session_stats_hourly") {
+		t.Error("missing session_stats_hourly DDL")
+	}
+	if !strings.Contains(stmts[5], "user_profile_stats_hourly") {
+		t.Error("missing user_profile_stats_hourly DDL")
+	}
+	if !strings.Contains(stmts[6], "audit_log") {
 		t.Error("missing audit_log DDL")
 	}
 	if DatabaseDDL("db") != "CREATE DATABASE IF NOT EXISTS db" {
