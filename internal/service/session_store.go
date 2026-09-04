@@ -37,6 +37,8 @@ type SessionSummaryStore interface {
 	PurgeSessionsByUser(ctx context.Context, tenant, userID string) error
 	// CreateSession 创建会话（先写 ClickHouse，再写 Redis，保证一致性）。
 	CreateSession(ctx context.Context, summary *models.SessionSummary) error
+	// RebuildSessionsIndex 重建会话 ZSET 索引（从 Hash 回填，幂等）。
+	RebuildSessionsIndex(ctx context.Context, tenant string) (int64, error)
 }
 
 // SessionSearchOptions 会话检索选项。
@@ -411,6 +413,55 @@ func (s *RedisSessionSummaryStore) PurgeSessionsByUser(ctx context.Context, tena
 	return nil
 }
 
+// RebuildSessionsIndex 重建会话 ZSET 索引（从 Hash 回填，幂等）。
+// 返回重建的会话数量。
+func (s *RedisSessionSummaryStore) RebuildSessionsIndex(ctx context.Context, tenant string) (int64, error) {
+	idxKey := cache.SessionsIndexKey(tenant)
+	pattern := cache.SessionKey(tenant, "*")
+
+	// 先清空旧索引（幂等）
+	if err := s.client.Del(ctx, idxKey).Err(); err != nil {
+		return 0, fmt.Errorf("session store: del index: %w", err)
+	}
+
+	var count int64
+	iter := s.client.Scan(ctx, 0, pattern, 1000).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+		res, err := s.client.HGetAll(ctx, key).Result()
+		if err != nil {
+			return count, fmt.Errorf("session store: hgetall: %w", err)
+		}
+		if len(res) == 0 || res[cache.DeletedField] == "1" {
+			continue
+		}
+		endedAtStr := res["ended_at"]
+		endedAt, err := time.Parse(time.RFC3339, endedAtStr)
+		if err != nil {
+			continue // 跳过时间格式错误的记录
+		}
+		sessionID := res["session_id"]
+		if sessionID == "" {
+			continue
+		}
+		score := float64(endedAt.UnixMilli())
+		if err := s.client.ZAdd(ctx, cache.SessionsIndexKey(tenant), redis.Z{Score: score, Member: sessionID}).Err(); err != nil {
+			return count, fmt.Errorf("session store: zadd: %w", err)
+		}
+		count++
+	}
+	if err := iter.Err(); err != nil {
+		return count, fmt.Errorf("session store: scan: %w", err)
+	}
+	// 同步设置 ZSET TTL
+	if s.ttl > 0 {
+		if err := s.client.Expire(ctx, cache.SessionsIndexKey(tenant), s.ttl).Err(); err != nil {
+			return count, fmt.Errorf("session store: expire index: %w", err)
+		}
+	}
+	return count, nil
+}
+
 // sortSessionsByEndedAt 按结束时间倒序排序（最近的在前）。
 func sortSessionsByEndedAt(sessions []*models.SessionSummary) {
 	sort.SliceStable(sessions, func(i, j int) bool {
@@ -676,6 +727,11 @@ func (s *MemorySessionSummaryStore) PurgeSessionsByUser(_ context.Context, tenan
 		delete(s.deleted, key)
 	}
 	return nil
+}
+
+// RebuildSessionsIndex 内存实现无需重建索引。
+func (s *MemorySessionSummaryStore) RebuildSessionsIndex(_ context.Context, _ string) (int64, error) {
+	return 0, nil
 }
 
 var (

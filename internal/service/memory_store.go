@@ -52,6 +52,8 @@ type ProfileStore interface {
 	DeleteProfile(ctx context.Context, tenant, entityType, entityID string) error
 	// PurgeProfile 硬删除（不可恢复），真正清理热存储。
 	PurgeProfile(ctx context.Context, tenant, entityType, entityID string) error
+	// RebuildUsersIndex 重建用户 ZSET 索引（从 Hash 回填，幂等）。
+	RebuildUsersIndex(ctx context.Context, tenant string) (int64, error)
 }
 
 // ListOptions 列表查询选项。
@@ -357,6 +359,55 @@ func (s *RedisProfileStore) PurgeProfile(ctx context.Context, tenant, entityType
 	return nil
 }
 
+// RebuildUsersIndex 重建用户 ZSET 索引（从 Hash 回填，幂等）。
+// 返回重建的用户数量。
+func (s *RedisProfileStore) RebuildUsersIndex(ctx context.Context, tenant string) (int64, error) {
+	idxKey := cache.UsersIndexKey(tenant)
+	pattern := cache.MemoryKey(tenant, models.EntityTypeUser, "*")
+	
+	// 先清空旧索引（幂等）
+	if err := s.client.Del(ctx, idxKey).Err(); err != nil {
+		return 0, fmt.Errorf("profile store: del index: %w", err)
+	}
+
+	var count int64
+	iter := s.client.Scan(ctx, 0, pattern, 1000).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+		res, err := s.client.HGetAll(ctx, key).Result()
+		if err != nil {
+			return count, fmt.Errorf("profile store: hgetall: %w", err)
+		}
+		if len(res) == 0 || res[cache.DeletedField] == "1" {
+			continue
+		}
+		updatedAtStr := res["_updated_at"]
+		updatedAt, err := time.Parse(time.RFC3339, updatedAtStr)
+		if err != nil {
+			continue // 跳过时间格式错误的记录
+		}
+		userID := res["entity_id"]
+		if userID == "" {
+			continue
+		}
+		score := float64(updatedAt.UnixMilli())
+		if err := s.client.ZAdd(ctx, cache.UsersIndexKey(tenant), redis.Z{Score: score, Member: userID}).Err(); err != nil {
+			return count, fmt.Errorf("profile store: zadd: %w", err)
+		}
+		count++
+	}
+	if err := iter.Err(); err != nil {
+		return count, fmt.Errorf("profile store: scan: %w", err)
+	}
+	// 同步设置 ZSET TTL
+	if s.ttl > 0 {
+		if err := s.client.Expire(ctx, cache.UsersIndexKey(tenant), s.ttl).Err(); err != nil {
+			return count, fmt.Errorf("profile store: expire index: %w", err)
+		}
+	}
+	return count, nil
+}
+
 // MemoryProfileStore 是内存实现，用于测试与无 Redis 场景。
 type MemoryProfileStore struct {
 	mu       sync.RWMutex
@@ -548,6 +599,11 @@ func (s *MemoryProfileStore) PurgeProfile(_ context.Context, tenant, entityType,
 	delete(s.profiles, key)
 	delete(s.versions, key)
 	return nil
+}
+
+// RebuildUsersIndex 内存实现无需重建索引。
+func (s *MemoryProfileStore) RebuildUsersIndex(_ context.Context, _ string) (int64, error) {
+	return 0, nil
 }
 
 var (

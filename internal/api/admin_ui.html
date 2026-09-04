@@ -43,6 +43,7 @@
     <button id="tab-users" class="active" onclick="switchTab('users')">用户与画像</button>
     <button id="tab-sessions" onclick="switchTab('sessions')">会话总结检索</button>
     <button id="tab-audit" onclick="switchTab('audit')">审计日志</button>
+    <button id="btn-rebuild-index" onclick="rebuildIndex()" class="primary" style="margin-left:auto">重建 ZSET 索引</button>
     <label class="muted" style="margin-left:auto"><input type="checkbox" id="hard"/> 硬删除（不可恢复，绕过软删除）</label>
   </div>
 
@@ -326,6 +327,23 @@
   }
 
   const tokenQS = () => { const tk=document.getElementById('token').value.trim(); return tk?('&__t='+encodeURIComponent(tk)):''; };
+
+  async function rebuildIndex(){
+    const btn = document.getElementById('btn-rebuild-index');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '重建中...';
+    setStatus('正在重建 ZSET 索引...');
+    try {
+      const d = await api('/index/rebuild', { method: 'POST' });
+      setStatus('索引重建完成：用户 ' + d.users_rebuilt + ' 个，会话 ' + d.sessions_rebuilt + ' 个，耗时 ' + d.duration_ms + 'ms');
+    } catch(e){
+      setStatus('重建失败: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '重建 ZSET 索引';
+    }
+  }
   document.getElementById('title').textContent = (window.__adminTitle || 'Mneme 管理后台');
 </script>
 </body>

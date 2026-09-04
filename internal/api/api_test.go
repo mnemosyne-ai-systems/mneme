@@ -501,6 +501,14 @@ func (s stubUserStore) PurgeSessionsByUser(_ context.Context, _, _ string) error
 	return nil
 }
 
+func (s stubUserStore) RebuildUsersIndex(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+
+func (s stubUserStore) RebuildSessionsIndex(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+
 func (s stubUserStore) GetSummary(_ context.Context, _, _ string) (*models.SessionSummary, error) {
 	if len(s.sessions) > 0 {
 		return s.sessions[0], nil

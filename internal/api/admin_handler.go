@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -49,6 +50,7 @@ func (h *AdminHandler) Register(r *mux.Router) {
 	r.HandleFunc("/sessions/{session_id}/export", h.ExportSession).Methods(http.MethodGet)
 	r.HandleFunc("/sessions/{session_id}", h.DeleteSession).Methods(http.MethodDelete)
 	r.HandleFunc("/sessions/summarize", h.SummarizeSessions).Methods(http.MethodPost)
+	r.HandleFunc("/index/rebuild", h.RebuildIndex).Methods(http.MethodPost)
 	r.HandleFunc("/audit", h.ListAudit).Methods(http.MethodGet)
 }
 
@@ -470,4 +472,49 @@ func (h *AdminHandler) ListAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]interface{}{"tenant_id": tenant, "audit": entries, "count": len(entries)})
+}
+
+// RebuildIndex 处理 POST /admin/api/index/rebuild（重建 ZSET 索引）。
+func (h *AdminHandler) RebuildIndex(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(r) {
+		writeError(w, http.StatusUnauthorized, CodeUnauthorized, "invalid admin token")
+		return
+	}
+	tenant := h.tenant(r)
+	if tenant == "" {
+		badRequest(w, CodeMissingTenant, "missing X-Tenant-ID header")
+		return
+	}
+
+	type rebuildResult struct {
+		UsersRebuilt    int64 `json:"users_rebuilt"`
+		SessionsRebuilt int64 `json:"sessions_rebuilt"`
+		DurationMs      int64 `json:"duration_ms"`
+	}
+
+	start := time.Now()
+	res := rebuildResult{}
+
+	if h.profiles != nil {
+		if n, err := h.profiles.RebuildUsersIndex(r.Context(), tenant); err != nil {
+			logger.FromContext(r.Context()).WithError(err).Error("admin rebuild users index failed")
+			internalError(w, "failed to rebuild users index")
+			return
+		} else {
+			res.UsersRebuilt = n
+		}
+	}
+	if h.sessions != nil {
+		if n, err := h.sessions.RebuildSessionsIndex(r.Context(), tenant); err != nil {
+			logger.FromContext(r.Context()).WithError(err).Error("admin rebuild sessions index failed")
+			internalError(w, "failed to rebuild sessions index")
+			return
+		} else {
+			res.SessionsRebuilt = n
+		}
+	}
+
+	res.DurationMs = time.Since(start).Milliseconds()
+	h.recordAudit(r, "rebuild_index", "", fmt.Sprintf("users=%d sessions=%d", res.UsersRebuilt, res.SessionsRebuilt))
+	writeOK(w, res)
 }
