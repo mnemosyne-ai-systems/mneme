@@ -1,0 +1,148 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mneme-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mneme
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  # CPU 使用率
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  # 内存使用率
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  # 自定义指标：写入队列积压
+  - type: Pods
+    pods:
+      metric:
+        name: mneme_write_queue_size
+      target:
+        type: AverageValue
+        averageValue: "5000"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+      selectPolicy: Max
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: mneme-monitor
+  namespace: production
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: mneme
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mneme-alerts
+  namespace: production
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: mneme.rules
+    rules:
+    # 写入路径
+    - alert: MnemeWriteLatencyHigh
+      expr: histogram_quantile(0.99, rate(mneme_write_duration_seconds_bucket[5m])) > 0.5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "写入 P99 延迟超过 500ms"
+    - alert: MnemeWriteQueueBacklog
+      expr: mneme_write_queue_size > 10000
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "写入队列积压超过 1万，可能发生背压"
+
+    # 读取路径
+    - alert: MnemeReadLatencyHigh
+      expr: histogram_quantile(0.99, rate(mneme_read_duration_seconds_bucket[5m])) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "读取 P99 延迟超过 100ms"
+
+    # 消费者健康
+    - alert: MnemeConsumerLagHigh
+      expr: mneme_consumer_lag_seconds > 300
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "消费者延迟超过 5 分钟，可能积压严重"
+    - alert: MnemeConsumerDown
+      expr: up{job="mneme-consumer"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "消费者进程宕机"
+
+    # 存储健康
+    - alert: MnemeRedisMemoryHigh
+      expr: (redis_memory_used_bytes / redis_memory_max_bytes) > 0.85
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Redis 内存使用率超过 85%"
+    - alert: MnemeClickHouseDiskHigh
+      expr: (clickhouse_disk_used_bytes / clickhouse_disk_total_bytes) > 0.85
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "ClickHouse 磁盘使用率超过 85%"
+
+    # 数据质量
+    - alert: MnemeQualityCheckFailed
+      expr: increase(mneme_quality_check_failed_total[5m]) > 0
+      for: 1m
+      labels:
+        severity: warning
+      annotations:
+        summary: "数据质量巡检发现失败项"
+      annotations:
+        summary: "数据质量巡检失败: {{ $labels.check }}"
+        severity: warning

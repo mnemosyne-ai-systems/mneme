@@ -88,11 +88,33 @@ var (
 		Help: "Total files processed by the file watcher.",
 	}, []string{"ext", "result"})
 
-	// AdapterPublishTotal 文件采集器批量投递结果计数（按消息数累计）。
+// AdapterPublishTotal 文件采集器批量投递结果计数（按消息数累计）。
 	AdapterPublishTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "mnemosyne_mneme_adapter_publish_total",
 		Help: "Total history messages delivered by the adapter sink.",
 	}, []string{"result"})
+	// QualityCheckTotal 质量巡检结果计数。
+	QualityCheckTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "mnemosyne_mneme_quality_check_total",
+		Help: "Total quality checks by name and result.",
+	}, []string{"check", "passed"})
+	// WriteQueueSize 当前写入队列积压大小。
+	WriteQueueSize = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "mneme_write_queue_size",
+		Help: "Current size of the write queue backlog.",
+	}, []string{})
+	// WriteDuration 写入延迟直方图。
+	WriteDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "mneme_write_duration_seconds",
+		Help:    "Write latency in seconds.",
+		Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+	}, []string{})
+	// ReadDuration 读取延迟直方图。
+	ReadDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "mneme_read_duration_seconds",
+		Help:    "Read latency in seconds.",
+		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
+	}, []string{"endpoint"})
 )
 
 // ObserveHTTP 记录一次 HTTP 请求。
