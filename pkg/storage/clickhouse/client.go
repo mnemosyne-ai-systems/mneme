@@ -15,17 +15,24 @@ import (
 
 // Config ClickHouse 连接配置。
 type Config struct {
-	Hosts         []string
-	Database      string
-	Username      string
-	Password      string
-	MaxOpenConns  int
-	MaxIdleConns  int
-	DialTimeout   time.Duration
-	BatchSize     int
-	FlushInterval time.Duration
-	MaxRetries    int
-	AutoMigrate   bool
+	Hosts             []string
+	Database          string
+	Username          string
+	Password          string
+	MaxOpenConns      int
+	MaxIdleConns      int
+	DialTimeout       time.Duration
+	BatchSize         int
+	MaxBatchBytes     int           // 批次最大字节数，防 OOM
+	FlushInterval     time.Duration
+	MaxRetries        int
+	AutoMigrate       bool
+
+	// 自适应批次控制
+	AdaptiveBatchEnabled bool
+	MinBatchSize         int
+	MaxBatchSize         int
+	TargetFlushLatency   time.Duration // 目标刷新延迟
 }
 
 func (c Config) withDefaults() Config {
@@ -41,6 +48,9 @@ func (c Config) withDefaults() Config {
 	if c.BatchSize <= 0 {
 		c.BatchSize = 10000
 	}
+	if c.MaxBatchBytes <= 0 {
+		c.MaxBatchBytes = 10 * 1024 * 1024 // 10MB
+	}
 	if c.FlushInterval <= 0 {
 		c.FlushInterval = 5 * time.Second
 	}
@@ -49,6 +59,18 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Database == "" {
 		c.Database = "mnemosyne"
+	}
+	if c.AdaptiveBatchEnabled == false {
+		c.AdaptiveBatchEnabled = true
+	}
+	if c.MinBatchSize <= 0 {
+		c.MinBatchSize = 1000
+	}
+	if c.MaxBatchSize <= 0 {
+		c.MaxBatchSize = 100000
+	}
+	if c.TargetFlushLatency <= 0 {
+		c.TargetFlushLatency = 100 * time.Millisecond
 	}
 	return c
 }

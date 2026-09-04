@@ -26,20 +26,32 @@ clickhouse:
   max_idle_conns: 5
   dial_timeout: 10s
   batch_size: 10000
+  max_batch_bytes: 10485760    # 10MB
   flush_interval: 5s
   max_retries: 5
   auto_migrate: true
+  # 自适应批次控制
+  adaptive_batch_enabled: true
+  min_batch_size: 1000
+  max_batch_size: 100000
+  target_flush_latency: 100ms  # 目标刷新延迟 100ms
 
 redis:
   addr: "localhost:6379"
   password: ""
   db: 0
   dial_timeout: 5s
-  pool_size: 20
+  read_timeout: 3s
+  write_timeout: 3s
+  pool_size: 80
+  min_idle_conns: 40
+  conn_max_idle_time: 30m
+  conn_max_lifetime: 1h
 
 cache:
   session_ttl: 720h      # 会话缓存 TTL，0 = 永不过期；例: 720h (30天)，生产建议 720h
   profile_ttl: 720h      # 用户画像缓存 TTL，0 = 永不过期；例: 720h (30天)，生产建议 720h
+  use_zset_index: true   # 开启 ZSET 索引替代 SCAN（生产环境建议开启）
 
 consumer:
   history_enabled: true

@@ -60,26 +60,38 @@ type PulsarConfig struct {
 
 // ClickHouseConfig ClickHouse 连接与批量写入配置。
 type ClickHouseConfig struct {
-	Hosts         []string      `mapstructure:"hosts"`
-	Database      string        `mapstructure:"database"`
-	Username      string        `mapstructure:"username"`
-	Password      string        `mapstructure:"password"`
-	MaxOpenConns  int           `mapstructure:"max_open_conns"`
-	MaxIdleConns  int           `mapstructure:"max_idle_conns"`
-	DialTimeout   time.Duration `mapstructure:"dial_timeout"`
-	BatchSize     int           `mapstructure:"batch_size"`
-	FlushInterval time.Duration `mapstructure:"flush_interval"`
-	MaxRetries    int           `mapstructure:"max_retries"`
-	AutoMigrate   bool          `mapstructure:"auto_migrate"`
+	Hosts             []string      `mapstructure:"hosts"`
+	Database          string        `mapstructure:"database"`
+	Username          string        `mapstructure:"username"`
+	Password          string        `mapstructure:"password"`
+	MaxOpenConns      int           `mapstructure:"max_open_conns"`
+	MaxIdleConns      int           `mapstructure:"max_idle_conns"`
+	DialTimeout       time.Duration `mapstructure:"dial_timeout"`
+	BatchSize         int           `mapstructure:"batch_size"`
+	MaxBatchBytes     int           `mapstructure:"max_batch_bytes"`
+	FlushInterval     time.Duration `mapstructure:"flush_interval"`
+	MaxRetries        int           `mapstructure:"max_retries"`
+	AutoMigrate       bool          `mapstructure:"auto_migrate"`
+
+	// 自适应批次控制
+	AdaptiveBatchEnabled bool          `mapstructure:"adaptive_batch_enabled"`
+	MinBatchSize         int           `mapstructure:"min_batch_size"`
+	MaxBatchSize         int           `mapstructure:"max_batch_size"`
+	TargetFlushLatency   time.Duration `mapstructure:"target_flush_latency"`
 }
 
 // RedisConfig Redis 连接配置。
 type RedisConfig struct {
-	Addr        string        `mapstructure:"addr"`
-	Password    string        `mapstructure:"password"`
-	DB          int           `mapstructure:"db"`
-	DialTimeout time.Duration `mapstructure:"dial_timeout"`
-	PoolSize    int           `mapstructure:"pool_size"`
+	Addr            string        `mapstructure:"addr"`
+	Password        string        `mapstructure:"password"`
+	DB              int           `mapstructure:"db"`
+	DialTimeout     time.Duration `mapstructure:"dial_timeout"`
+	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
+	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
+	PoolSize        int           `mapstructure:"pool_size"`
+	MinIdleConns    int           `mapstructure:"min_idle_conns"`
+	ConnMaxIdleTime time.Duration `mapstructure:"conn_max_idle_time"`
+	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
 }
 
 // CacheConfig 热存储 TTL 配置（0 = 永不过期）。
@@ -299,14 +311,25 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("clickhouse.max_retries", 5)
 	v.SetDefault("clickhouse.auto_migrate", true)
 
+	v.SetDefault("clickhouse.max_batch_bytes", 10*1024*1024)
+	v.SetDefault("clickhouse.adaptive_batch_enabled", true)
+	v.SetDefault("clickhouse.min_batch_size", 1000)
+	v.SetDefault("clickhouse.max_batch_size", 100000)
+	v.SetDefault("clickhouse.target_flush_latency", 100*time.Millisecond)
+
 	v.SetDefault("redis.addr", "localhost:6379")
 	v.SetDefault("redis.db", 0)
 	v.SetDefault("redis.dial_timeout", 5*time.Second)
-	v.SetDefault("redis.pool_size", 20)
+	v.SetDefault("redis.read_timeout", 3*time.Second)
+	v.SetDefault("redis.write_timeout", 3*time.Second)
+	v.SetDefault("redis.pool_size", 80)
+	v.SetDefault("redis.min_idle_conns", 40)
+	v.SetDefault("redis.conn_max_idle_time", 30*time.Minute)
+	v.SetDefault("redis.conn_max_lifetime", time.Hour)
 
 	v.SetDefault("cache.session_ttl", 720*time.Hour)
 	v.SetDefault("cache.profile_ttl", 720*time.Hour)
-	v.SetDefault("cache.use_zset_index", false)
+	v.SetDefault("cache.use_zset_index", true)
 
 	v.SetDefault("consumer.history_enabled", true)
 	v.SetDefault("consumer.traces_enabled", true)

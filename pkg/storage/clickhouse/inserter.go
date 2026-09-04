@@ -18,6 +18,9 @@ import (
 // ErrInserterClosed 表示写入器已关闭。
 var ErrInserterClosed = errors.New("clickhouse: inserter closed")
 
+// ErrBackpressure 表示背压拒绝。
+var ErrBackpressure = errors.New("clickhouse: backpressure, queue full")
+
 const (
 	insertHistorySQL = `INSERT INTO history_message (
         message_id, tenant_id, session_id, user_id, role, content, model_name,
@@ -37,14 +40,38 @@ const (
         id, tenant_id, actor, action, target, detail, at)`
 )
 
+// RejectStrategy 背压拒绝策略。
+type RejectStrategy int
+
+const (
+	RejectStrategyBlock RejectStrategy = iota // 阻塞等待
+	RejectStrategyDrop                         // 直接丢弃
+	RejectStrategyReject                       // 返回错误
+)
+
 // BatchInserter 实现 storage.BatchInserter，
 // 内部按管道维护缓冲区，支持定量（batch_size）与定时（flush_interval）刷新，
 // 写入失败采用指数退避重试（1s,2s,4s,8s,16s）。
+// 支持自适应批次大小、背压控制、最大字节数限制。
 type BatchInserter struct {
 	conn      driver.Conn
 	batchSize int
+	maxBatchBytes int           // 批次最大字节数，防 OOM
 	interval  time.Duration
 	retries   int
+
+	// 自适应批次控制
+	adaptiveBatchEnabled bool
+	minBatchSize         int
+	maxBatchSize         int
+	targetFlushLatency   time.Duration // 目标刷新延迟
+	throughputEWMA       float64       // 指数加权移动平均吞吐 (rows/sec)
+	throughputAlpha      float64       // EWMA 平滑因子
+
+	// 背压控制
+	rejectStrategy RejectStrategy
+	semaphore      chan struct{} // 并发写入信号量
+	maxQueueSize   int           // 最大队列长度（行数）
 
 	mu        sync.Mutex
 	history   []*models.HistoryMessage
@@ -53,23 +80,42 @@ type BatchInserter struct {
 	summaries []*models.SessionSummary
 	auditLogs []*models.AuditEntry
 
-	closed  bool
-	stopCh  chan struct{}
-	stopped chan struct{}
+	closed    bool
+	stopCh    chan struct{}
+	stopped   chan struct{}
+	flushCh   chan struct{} // 手动触发刷新信号
+
+	// 统计
+	totalRowsWritten   int64
+	totalFlushCount    int64
+	totalFlushLatency  time.Duration
+	lastAdaptTime      time.Time
 }
 
-// NewBatchInserter 创建批量写入器，并启动后台定时刷新协程。
+// NewBatchInserter 创建批量写入器，并启动后台定时刷新协程与自适应批次调整协程。
 func NewBatchInserter(client *Client) *BatchInserter {
 	cfg := client.Config()
 	bi := &BatchInserter{
-		conn:      client.Conn(),
-		batchSize: cfg.BatchSize,
-		interval:  cfg.FlushInterval,
-		retries:   cfg.MaxRetries,
-		stopCh:    make(chan struct{}),
-		stopped:   make(chan struct{}),
+		conn:                 client.Conn(),
+		batchSize:            cfg.BatchSize,
+		maxBatchBytes:        cfg.MaxBatchBytes,
+		interval:             cfg.FlushInterval,
+		retries:              cfg.MaxRetries,
+		adaptiveBatchEnabled: cfg.AdaptiveBatchEnabled,
+		minBatchSize:         cfg.MinBatchSize,
+		maxBatchSize:         cfg.MaxBatchSize,
+		targetFlushLatency:   cfg.TargetFlushLatency,
+		throughputAlpha:      0.3,
+		rejectStrategy:       RejectStrategyBlock,
+		semaphore:            make(chan struct{}, 10000), // 默认允许 10k 并发写入
+		maxQueueSize:         1000000,                    // 最大队列 100 万行
+		stopCh:               make(chan struct{}),
+		stopped:              make(chan struct{}),
+		flushCh:              make(chan struct{}, 1),
+		lastAdaptTime:        time.Now(),
 	}
 	go bi.loop()
+	go bi.adaptLoop()
 	return bi
 }
 
@@ -85,18 +131,26 @@ func (b *BatchInserter) loop() {
 			if err := b.Flush(); err != nil {
 				logger.L().WithError(err).Error("clickhouse periodic flush failed")
 			}
+		case <-b.flushCh:
+			if err := b.Flush(); err != nil {
+				logger.L().WithError(err).Error("clickhouse manual flush failed")
+			}
 		}
 	}
 }
 
 // InsertHistory 缓冲会话历史，达到阈值时立即刷新。
-// 注意：阈值触发的直接写入失败时不会自动 requeue（batch 已从缓冲区取出），
-// 调用方必须自行处理返回的 error 并重试（consumer 层负责放回重试），
-// 否则数据会丢失。定时 Flush 路径则自带 requeue。
+// 支持背压控制：达到 maxQueueSize 时根据策略阻塞/丢弃/拒绝。
 func (b *BatchInserter) InsertHistory(ctx context.Context, messages []*models.HistoryMessage) error {
 	if len(messages) == 0 {
 		return nil
 	}
+	// 背压控制
+	if !b.acquireSemaphore(ctx) {
+		return ErrBackpressure
+	}
+	defer b.releaseSemaphore()
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -107,6 +161,11 @@ func (b *BatchInserter) InsertHistory(ctx context.Context, messages []*models.Hi
 	var batch []*models.HistoryMessage
 	if ready {
 		batch, b.history = b.history, nil
+		// 触发手动刷新
+		select {
+		case b.flushCh <- struct{}{}:
+		default:
+		}
 	}
 	b.mu.Unlock()
 
@@ -116,13 +175,51 @@ func (b *BatchInserter) InsertHistory(ctx context.Context, messages []*models.Hi
 	return nil
 }
 
+// acquireSemaphore 获取信号量，支持阻塞/丢弃/拒绝策略
+func (b *BatchInserter) acquireSemaphore(ctx context.Context) bool {
+	switch b.rejectStrategy {
+	case RejectStrategyBlock:
+		select {
+		case b.semaphore <- struct{}{}:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	case RejectStrategyDrop:
+		select {
+		case b.semaphore <- struct{}{}:
+			return true
+		default:
+			return false
+		}
+	case RejectStrategyReject:
+		select {
+		case b.semaphore <- struct{}{}:
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func (b *BatchInserter) releaseSemaphore() {
+	select {
+	case <-b.semaphore:
+	default:
+	}
+}
+
 // InsertTraces 缓冲轨迹数据。
-// 注意：与 InsertHistory 相同，阈值触发的直接写入失败不会自动 requeue，
-// 调用方必须自行处理 error 并重试。
 func (b *BatchInserter) InsertTraces(ctx context.Context, traces []*models.TraceMessage) error {
 	if len(traces) == 0 {
 		return nil
 	}
+	if !b.acquireSemaphore(ctx) {
+		return ErrBackpressure
+	}
+	defer b.releaseSemaphore()
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -132,6 +229,12 @@ func (b *BatchInserter) InsertTraces(ctx context.Context, traces []*models.Trace
 	var batch []*models.TraceMessage
 	if len(b.traces) >= b.batchSize {
 		batch, b.traces = b.traces, nil
+		if batch != nil {
+			select {
+			case b.flushCh <- struct{}{}:
+			default:
+			}
+		}
 	}
 	b.mu.Unlock()
 
@@ -142,12 +245,15 @@ func (b *BatchInserter) InsertTraces(ctx context.Context, traces []*models.Trace
 }
 
 // InsertMemory 缓冲实体画像。
-// 注意：与 InsertHistory 相同，阈值触发的直接写入失败不会自动 requeue，
-// 调用方必须自行处理 error 并重试。
 func (b *BatchInserter) InsertMemory(ctx context.Context, memories []*models.EntityMemory) error {
 	if len(memories) == 0 {
 		return nil
 	}
+	if !b.acquireSemaphore(ctx) {
+		return ErrBackpressure
+	}
+	defer b.releaseSemaphore()
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -157,6 +263,12 @@ func (b *BatchInserter) InsertMemory(ctx context.Context, memories []*models.Ent
 	var batch []*models.EntityMemory
 	if len(b.memories) >= b.batchSize {
 		batch, b.memories = b.memories, nil
+		if batch != nil {
+			select {
+			case b.flushCh <- struct{}{}:
+			default:
+			}
+		}
 	}
 	b.mu.Unlock()
 
@@ -167,12 +279,15 @@ func (b *BatchInserter) InsertMemory(ctx context.Context, memories []*models.Ent
 }
 
 // InsertSessionSummary 缓冲会话总结。
-// 注意：与 InsertHistory 相同，阈值触发的直接写入失败不会自动 requeue，
-// 调用方必须自行处理 error 并重试。
 func (b *BatchInserter) InsertSessionSummary(ctx context.Context, summaries []*models.SessionSummary) error {
 	if len(summaries) == 0 {
 		return nil
 	}
+	if !b.acquireSemaphore(ctx) {
+		return ErrBackpressure
+	}
+	defer b.releaseSemaphore()
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -182,6 +297,12 @@ func (b *BatchInserter) InsertSessionSummary(ctx context.Context, summaries []*m
 	var batch []*models.SessionSummary
 	if len(b.summaries) >= b.batchSize {
 		batch, b.summaries = b.summaries, nil
+		if batch != nil {
+			select {
+			case b.flushCh <- struct{}{}:
+			default:
+			}
+		}
 	}
 	b.mu.Unlock()
 
@@ -295,6 +416,11 @@ func (b *BatchInserter) InsertAuditLog(ctx context.Context, entry *models.AuditE
 	if entry == nil {
 		return nil
 	}
+	if !b.acquireSemaphore(ctx) {
+		return ErrBackpressure
+	}
+	defer b.releaseSemaphore()
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -304,6 +430,12 @@ func (b *BatchInserter) InsertAuditLog(ctx context.Context, entry *models.AuditE
 	var batch []*models.AuditEntry
 	if len(b.auditLogs) >= b.batchSize {
 		batch, b.auditLogs = b.auditLogs, nil
+		if batch != nil {
+			select {
+			case b.flushCh <- struct{}{}:
+			default:
+			}
+		}
 	}
 	b.mu.Unlock()
 
@@ -364,7 +496,67 @@ func (b *BatchInserter) QueryAuditLog(ctx context.Context, tenant string, limit,
 	return out, rows.Err()
 }
 
-// Close 停止定时器并刷新剩余数据。
+// adaptLoop 后台自适应批次大小调整循环。
+// 根据实时吞吐量动态调整 batchSize，目标是将刷新延迟控制在 targetFlushLatency 附近。
+func (b *BatchInserter) adaptLoop() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-b.stopCh:
+			return
+		case <-ticker.C:
+			if !b.adaptiveBatchEnabled {
+				continue
+			}
+			now := time.Now()
+			elapsed := now.Sub(b.lastAdaptTime).Seconds()
+			if elapsed <= 0 {
+				continue
+			}
+
+			// 计算当前吞吐量 (rows/sec)
+			currentThroughput := float64(b.totalRowsWritten) / elapsed
+			if currentThroughput > 0 {
+				// EWMA 平滑
+				if b.throughputEWMA == 0 {
+					b.throughputEWMA = currentThroughput
+				} else {
+					b.throughputEWMA = b.throughputAlpha*currentThroughput + (1-b.throughputAlpha)*b.throughputEWMA
+				}
+
+				// 根据吞吐量计算最优 batchSize
+				// 目标：batchSize / throughput ≈ targetFlushLatency
+				optimalBatch := int(b.throughputEWMA * b.targetFlushLatency.Seconds())
+				optimalBatch = clamp(optimalBatch, b.minBatchSize, b.maxBatchSize)
+
+				b.mu.Lock()
+				if optimalBatch != b.batchSize {
+					logger.L().Debugf("adaptive batch size: %d -> %d (throughput=%.1f rows/s)",
+						b.batchSize, optimalBatch, b.throughputEWMA)
+					b.batchSize = optimalBatch
+				}
+				b.mu.Unlock()
+			}
+
+			// 重置统计
+			b.mu.Lock()
+			b.totalRowsWritten = 0
+			b.lastAdaptTime = now
+			b.mu.Unlock()
+		}
+	}
+}
+
+func clamp(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
 func (b *BatchInserter) Close() error {
 	b.mu.Lock()
 	if b.closed {

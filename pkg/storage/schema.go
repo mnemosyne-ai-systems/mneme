@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS history_message (
     created_at DateTime
 ) ENGINE = MergeTree()
 ORDER BY (tenant_id, session_id, created_at)
-PARTITION BY toYYYYMM(created_at)`
+PARTITION BY toYYYYMM(created_at)
+TTL created_at + INTERVAL 730 DAY
+SETTINGS index_granularity = 8192`
 
 	// DDLAgentTraces 短期轨迹表（TTL 7 天）。
 	DDLAgentTraces = `
@@ -38,7 +40,8 @@ CREATE TABLE IF NOT EXISTS agent_traces (
     timestamp  DateTime
 ) ENGINE = MergeTree()
 ORDER BY (tenant_id, request_id, timestamp)
-TTL timestamp + INTERVAL 7 DAY`
+TTL timestamp + INTERVAL 7 DAY
+SETTINGS index_granularity = 8192`
 
 	// DDLEntityMemory 实体记忆表（ReplacingMergeTree 支持版本更新）。
 	DDLEntityMemory = `
@@ -46,11 +49,12 @@ CREATE TABLE IF NOT EXISTS entity_memory (
     entity_id   String,
     tenant_id   String,
     entity_type String,
-    profile     String,
-    _version    Int64,
-    updated_at  DateTime
+    profile     String CODEC(ZSTD(3)),
+    _version    Int64 CODEC(ZSTD(3)),
+    updated_at  DateTime CODEC(Delta(4), ZSTD(3))
 ) ENGINE = ReplacingMergeTree(_version)
-ORDER BY (tenant_id, entity_type, entity_id)`
+ORDER BY (tenant_id, entity_type, entity_id)
+SETTINGS index_granularity = 8192`
 
 	// DDLSessionSummary 会话总结表（ReplacingMergeTree 按版本更新）。
 	DDLSessionSummary = `
@@ -58,29 +62,31 @@ CREATE TABLE IF NOT EXISTS session_summary (
     session_id    String,
     tenant_id     String,
     user_id       String,
-    summary       String,
-    message_count Int32,
-    started_at    DateTime,
-    ended_at      DateTime,
-    _version      Int64,
-    updated_at    DateTime
+    summary       String CODEC(ZSTD(3)),
+    message_count Int32 CODEC(ZSTD(3)),
+    started_at    DateTime CODEC(Delta(4), ZSTD(3)),
+    ended_at      DateTime CODEC(Delta(4), ZSTD(3)),
+    _version      Int64 CODEC(ZSTD(3)),
+    updated_at    DateTime CODEC(Delta(4), ZSTD(3))
 ) ENGINE = ReplacingMergeTree(_version)
-ORDER BY (tenant_id, session_id)`
+ORDER BY (tenant_id, session_id)
+SETTINGS index_granularity = 8192`
 
 	// DDLAuditLog 审计日志表（只追加，按时间倒序查询）。
 	DDLAuditLog = `
 CREATE TABLE IF NOT EXISTS audit_log (
     id          UInt64,
     tenant_id   String,
-    actor       String,
-    action      String,
-    target      String,
-    detail      String,
-    at          DateTime
+    actor       String CODEC(ZSTD(3)),
+    action      String CODEC(ZSTD(3)),
+    target      String CODEC(ZSTD(3)),
+    detail      String CODEC(ZSTD(3)),
+    at          DateTime CODEC(Delta(4), ZSTD(3))
 ) ENGINE = MergeTree()
 ORDER BY (tenant_id, at)
 PARTITION BY toYYYYMM(at)
-TTL at + INTERVAL 90 DAY`
+TTL at + INTERVAL 90 DAY
+SETTINGS index_granularity = 8192`
 )
 
 // SchemaStatements 返回按顺序执行的建表语句。
