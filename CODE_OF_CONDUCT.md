@@ -1,38 +1,53 @@
-# 社区行为准则（Code of Conduct）
+# Code of Conduct
 
-## 我们的承诺
+## Our Pledge
 
-为了营造开放、友好的环境，我们承诺：无论年龄、体型、身体健全与否、民族、性别认同与表达、经验水平、教育背景、社会经济状况、国籍、外貌、种族、宗教或性认同，参与本项目的所有人都不受骚扰。
+We as members, contributors, and leaders pledge to make participation in our community a
+harassment-free experience for everyone, regardless of age, body size, visible or invisible
+disability, ethnicity, sex characteristics, gender identity and expression, level of experience,
+education, socio-economic status, nationality, personal appearance, race, caste, color, religion,
+or sexual identity and orientation.
 
-## 我们的标准
+## Our Standards
 
-有助于营造积极环境的行为：
+Examples of behavior that contributes to a positive environment:
 
-- 展现同理心与善意，尊重不同观点与经验
-- 接受建设性的批评，并专注于对事不对人
-- 对社区最佳福祉负责，主动营造包容环境
-- 展现同理心，尤其面对新手提问
+- Demonstrating empathy and kindness toward other people
+- Being respectful of differing opinions, viewpoints, and experiences
+- Giving and gracefully accepting constructive feedback
+- Accepting responsibility and apologizing to those affected by our mistakes
+- Focusing on what is best for the overall community
 
-不可接受的行为：
+Examples of unacceptable behavior:
 
-- 使用带有性暗示或敌意的语言与 imagery
-- 挑衅、侮辱 / 人身攻击，公开或私下的政治攻击
-- 骚扰、人身威胁或跟踪
-- 未经明确许可，公开他人的私人信息
-- 在专业场合被认为不恰当的其他行为
+- The use of sexualized language or imagery, and sexual attention or advances of any kind
+- Trolling, insulting or derogatory comments, and personal or political attacks
+- Public or private harassment
+- Publishing others' private information, such as a physical or email address, without their
+  explicit permission
+- Other conduct which could reasonably be considered inappropriate in a professional setting
 
-## 责任与执行
+## Enforcement Responsibilities
 
-社区负责人有责任澄清并公正地处理这些标准的不当行为，
-执行方式包括：警告、封禁、临时或永久 ban、移除贡献内容。
+Community leaders are responsible for clarifying and enforcing our standards of acceptable
+behavior and will take appropriate and fair corrective action in response to any behavior that they
+deem inappropriate, threatening, offensive, or harmful.
 
-报告不当行为请通过 [SECURITY.md](SECURITY.md) 中的渠道私下联系维护者，或在 GitHub 上举报。
-所有投诉都将被及时、保密地审查与处理；举报人身份将被尊重。
+## Scope
 
-## 适用范围
+This Code of Conduct applies within all community spaces (issues, pull requests, discussions, code
+reviews) and also applies when an individual is officially representing the community in public
+spaces.
 
-本准则适用于所有社区空间（Issue、PR、Discussion、代码审查）以及个人代表项目的场合。
+## Enforcement
 
-## 来源
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community
+leaders responsible for enforcement through the private channels listed in
+[SECURITY.md](SECURITY.md), or by using GitHub's reporting features. All complaints will be
+reviewed and investigated promptly and fairly. All community leaders are obligated to respect the
+privacy and security of the reporter of any incident.
 
-改编自 [Contributor Covenant](https://www.contributor-covenant.org)，版本 2.1。
+## Attribution
+
+This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org),
+version 2.1.

@@ -1,25 +1,26 @@
-name: Bug 反馈
-description: 报告可复现的问题
+name: Bug report
+description: Report a reproducible problem
 labels: ["bug", "needs triage"]
 body:
   - type: markdown
     attributes:
       value: |
-        感谢反馈！请先确认已在最新 `main` 上复现，并搜索是否已有同类 Issue。
+        Thanks for the report! Please confirm it reproduces on the latest `main` and that no
+        existing issue covers it.
 
   - type: textarea
     id: description
     attributes:
-      label: 问题描述
-      description: 期望发生什么，实际发生了什么
+      label: What happened
+      description: What did you expect to happen, and what happened instead?
     validations:
       required: true
 
   - type: textarea
     id: repro
     attributes:
-      label: 复现步骤
-      description: 尽量提供可直接执行的请求（curl / mneme.http）或最小复现代码
+      label: Reproduction steps
+      description: Provide runnable requests (curl / mneme.http) or a minimal code sample
       render: shell
     validations:
       required: true
@@ -27,50 +28,50 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: 日志片段
-      description: 粘贴相关日志，注意脱敏（令牌、密码、用户对话内容）
+      label: Logs
+      description: Paste relevant log lines with secrets, tokens, and user content redacted
       render: shell
 
   - type: input
     id: version
     attributes:
-      label: 版本 / Commit
-      placeholder: v0.1.0 或 a1b2c3d
+      label: Version / commit
+      placeholder: v0.1.0 or a1b2c3d
 
   - type: dropdown
     id: deploy
     attributes:
-      label: 部署方式
+      label: Deployment
       options:
         - docker run
-        - docker compose（deploy/docker-compose.yaml）
+        - docker compose (deploy/docker-compose.yaml)
         - Kubernetes
-        - 本地 go run
+        - local go run
     validations:
       required: true
 
   - type: dropdown
     id: components
     attributes:
-      label: 相关组件
+      label: Affected component
       multiple: true
       options:
-        - internal/api（HTTP 接口）
-        - internal/consumer（消费与萃取）
-        - internal/service（业务存储）
-        - pkg/cache（Redis）
-        - pkg/storage（ClickHouse）
-        - pkg/messagebus（Pulsar）
-        - internal/filewatcher（文件采集）
-        - 管理后台 /admin
-        - 部署 / 运维
-        - 其他
+        - internal/api (HTTP endpoints)
+        - internal/consumer (consumption and extraction)
+        - internal/service (profile/session stores)
+        - pkg/cache (Redis)
+        - pkg/storage (ClickHouse)
+        - pkg/messagebus (Pulsar)
+        - internal/filewatcher
+        - Admin console (/admin)
+        - Deployment / operations
+        - Other
 
   - type: checkboxes
     id: checks
     attributes:
-      label: 提交前确认
+      label: Before submitting
       options:
-        - label: 我已在最新 main 上复现
-        - label: 我已搜索过现有 Issue，无重复
-        - label: 我已对日志与配置脱敏
+        - label: Reproduced on the latest main
+        - label: Searched existing issues, no duplicate found
+        - label: Redacted secrets and user data from the logs

@@ -4,61 +4,67 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-**Mneme** 是一个面向 AI Agent 的**长期记忆服务**：把对话历史、Agent 轨迹、显式记忆事件汇聚成
-**用户画像（跨会话稳定属性）** 与 **会话总结（单次对话内容）**，并通过统一的 HTTP 接口对外提供低延迟查询与数据治理能力。
+**Mneme** is a **long-term memory service for AI agents**. It turns conversation history, agent
+traces, and explicit memory events into two durable artifacts:
 
-> 名字取自希腊语 *μνήμη*（记忆）。架构上采用「消息总线解耦 + 冷热分离存储」：
-> Pulsar 承接写入峰值，Redis 承载毫秒级热数据，ClickHouse 承载长期留存与分析。
+- **User profiles** — stable attributes that persist across sessions
+- **Session summaries** — what a single conversation was about
 
----
+Both are served through a unified HTTP API with low-latency reads and first-class data governance.
 
-## 目录
-
-- [特性](#特性)
-- [架构](#架构)
-- [快速开始](#快速开始)
-- [API 一览](#api-一览)
-- [配置](#配置)
-- [数据存储](#数据存储)
-- [可观测性](#可观测性)
-- [部署](#部署)
-- [文件采集器 file-adapter](#文件采集器-file-adapter)
-- [项目结构](#项目结构)
-- [路线图](#路线图)
-- [参与贡献](#参与贡献)
+> Named after the Greek *μνήμη* (memory). The architecture follows **write decoupling + hot/cold
+> storage split**: Pulsar absorbs write peaks, Redis serves millisecond reads, ClickHouse retains
+> data long-term and powers analytics.
 
 ---
 
-## 特性
+## Contents
 
-| 能力 | 说明 |
-|------|------|
-| **三条写入管道** | 会话历史 `history`、Agent 轨迹 `traces`、长期记忆事件 `memory`，经 Pulsar 异步落库，削峰填谷 |
-| **双存储模型** | Redis 热数据（Hash + ZSET 索引 + TTL）毫秒级读；ClickHouse 冷数据（压缩 + TTL）长期留存 |
-| **画像 / 总结自动萃取** | 对话历史按用户聚合成画像、按会话生成总结；内置规则实现，开箱即用 |
-| **可选 LLM 增强** | 开启 `memory.llm.enabled` 后画像与总结改由 LLM 精炼；关闭时**零 LLM 成本** |
-| **数据治理** | 软删除 / 硬删除、游标分页、时间范围过滤、单用户与会话导出，全部操作写审计日志（ClickHouse） |
-| **管理后台** | 内置零依赖单页后台 `/admin`，画像浏览、会话检索、折叠长消息、一键重建索引 |
-| **自动批写** | `BatchInserter` 按行数 / 时间 / 字节数三阈值刷写，失败自动回队与重试，进程退出前强制落盘 |
-| **可观测性** | Prometheus 指标、OpenTelemetry Trace、结构化 JSON 日志、健康 / 就绪探针 |
-| **弹性伸缩** | 提供 HPA + ServiceMonitor + PrometheusRule，多实例水平扩容 |
-| **水平扩展** | Consumer 与 HTTP 层无状态，多副本部署；Pulsar 订阅保证同一会话内消息有序 |
+- [Features](#features)
+- [Architecture](#architecture)
+- [Quick Start](#quick-start)
+- [API](#api)
+- [Configuration](#configuration)
+- [Storage Model](#storage-model)
+- [Observability](#observability)
+- [Deployment](#deployment)
+- [File Adapter](#file-adapter)
+- [Project Layout](#project-layout)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
 
 ---
 
-## 架构
+## Features
+
+| Capability | Description |
+|------------|-------------|
+| **Three ingestion pipelines** | Conversation history, agent traces, and explicit memory events are published to Pulsar and written asynchronously, absorbing traffic spikes |
+| **Hot/cold storage split** | Redis hot data (Hash + ZSET indexes + TTL) for millisecond reads; ClickHouse cold data (compression + TTL) for retention and analytics |
+| **Automatic profile & summary extraction** | History is aggregated into per-user profiles and per-session summaries by a rule-based extractor that works out of the box |
+| **Optional LLM refinement** | Set `memory.llm.enabled: true` to refine profiles and summaries with an LLM; leave it off for **zero LLM cost** |
+| **Data governance** | Soft/hard delete, cursor pagination, time-range filtering, per-user and per-session export; every mutation is written to an audit log in ClickHouse |
+| **Admin console** | Dependency-free single-page console at `/admin` for profile browsing, session search, collapsible long messages, and one-click index rebuild |
+| **Batched writes** | `BatchInserter` flushes on row count, time, or byte thresholds; failed batches are requeued and retried; buffers are flushed on shutdown |
+| **Observability** | Prometheus metrics, OpenTelemetry tracing, structured JSON logs, health and readiness probes |
+| **Autoscaling** | Shipped HPA + ServiceMonitor + PrometheusRule examples for multi-replica deployments |
+| **Horizontal scale-out** | Consumers and the HTTP tier are stateless; Pulsar subscriptions preserve per-session message ordering |
+
+---
+
+## Architecture
 
 ```
-              客户端 / Agent / 采集器
+              Clients / Agents / Adapters
                         │  HTTP
              ┌──────────▼───────────┐
-             │   internal/api       │  校验 → 发布
+             │    internal/api      │  validate → publish
              └──────────┬───────────┘
-                        │  Publish
+                        │  publish
              ┌──────────▼───────────┐
-             │  Pulsar（3 个 Topic） │
+             │  Pulsar (3 topics)   │
              └──────────┬───────────┘
-                        │  Subscribe
+                        │  subscribe
    ┌────────────┬───────┴───────┬────────────────┬──────────────────┐
 History     Traces          Memory         HistoryProfile   SessionSummary
 Consumer    Consumer        Consumer          Consumer          Consumer
@@ -68,220 +74,224 @@ Consumer    Consumer        Consumer          Consumer          Consumer
         ┌───────────────┴────────────────┐
         │                                │
 ┌───────▼─────────┐          ┌───────────▼────────────┐
-│ ClickHouse（冷） │          │  Redis（热，带 TTL）    │
-│ history_message  │          │  画像 Hash / 会话 Hash  │
-│ agent_traces     │          │  ZSET 时间索引 / 版本号 │
-│ entity_memory    │          │  布隆去重              │
-│ session_summary  │          └───────────┬────────────┘
-│ audit_log        │                      │  未命中回源 ClickHouse
-└───────────────────┘                      │
+│ ClickHouse(cold)│          │   Redis (hot, TTL)      │
+│ history_message │          │  profile / session Hash │
+│ agent_traces    │          │  ZSET time index / ver  │
+│ entity_memory   │          │  bloom filter          │
+│ session_summary │          └───────────┬────────────┘
+│ audit_log       │                      │  miss → read-through CH
+└─────────────────┘                      │
                              ┌────────────▼────────────┐
-                             │ 查询接口 + 管理后台       │
+                             │  Query API + /admin      │
                              └─────────────────────────┘
 ```
 
-详细设计见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the detailed design.
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 1. 环境要求
+### 1. Requirements
 
 - Go 1.25+
-- Docker / Docker Compose（用于启动 Pulsar、ClickHouse、Redis）
-- 可选：本地 LLM 服务（Ollama / 任意 OpenAI 兼容端点）用于增强萃取
+- Docker / Docker Compose (to run Pulsar, ClickHouse, Redis)
+- Optional: a local LLM endpoint (Ollama or any OpenAI-compatible server) for refined extraction
 
-### 2. 启动依赖
-
-```bash
-make deps-up        # docker compose 起 Pulsar + ClickHouse + Redis
-```
-
-> 首次启动时 `pulsar-init` 会自动创建租户 `mnemosyne`、命名空间 `mneme` 与三个 Topic。
-
-### 3. 启动服务
+### 2. Start dependencies
 
 ```bash
-make run            # 等价于 go run ./cmd/mneme（默认读取 ./configs/config.yaml）
+make deps-up        # docker compose up Pulsar + ClickHouse + Redis
 ```
 
-| 地址 | 说明 |
-|------|------|
-| <http://localhost:8080/health> | 健康检查 |
-| <http://localhost:8080/ready> | 就绪检查 |
-| <http://localhost:8080/docs> | Swagger UI 接口文档 |
-| <http://localhost:8080/admin> | 管理后台（需 `admin.enabled: true`） |
-| <http://localhost:8080/metrics> | Prometheus 指标 |
+> On first start, the `pulsar-init` service creates tenant `mnemosyne`, namespace `mneme`, and the three topics.
 
-### 4. 验证链路
+### 3. Run the service
+
+```bash
+make run            # equivalent to: go run ./cmd/mneme (reads ./configs/config.yaml)
+```
+
+| Endpoint | Purpose |
+|----------|---------|
+| <http://localhost:8080/health> | Liveness probe |
+| <http://localhost:8080/ready> | Readiness probe |
+| <http://localhost:8080/docs> | Swagger UI |
+| <http://localhost:8080/admin> | Admin console (requires `admin.enabled: true`) |
+| <http://localhost:8080/metrics> | Prometheus metrics |
+
+### 4. Verify the pipeline
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/history/batch \
   -H 'Content-Type: application/json' \
   -H 'X-Tenant-ID: t1' \
   -d '{"messages":[
-        {"session_id":"s1","user_id":"u1","role":"user","content":"我习惯用 Go 写服务"},
-        {"session_id":"s1","user_id":"u1","role":"assistant","content":"好的，已记录"}
+        {"session_id":"s1","user_id":"u1","role":"user","content":"I prefer writing services in Go"},
+        {"session_id":"s1","user_id":"u1","role":"assistant","content":"Noted."}
       ]}'
 
-# 读取聚合后的用户上下文（画像 + 会话总结）
+# Read back the aggregated user context (profile + session summaries)
 curl -H 'X-Tenant-ID: t1' http://localhost:8080/api/v1/users/u1
 ```
 
-完整可执行的请求集合见 [mneme.http](mneme.http)（IntelliJ / VS Code REST Client 可直接运行）。
+A ready-to-run collection of requests lives in [mneme.http](mneme.http) (IntelliJ / VS Code REST Client).
 
-> **提示**：写入经 Pulsar 异步落库，拉取式萃取按 `consumer.session_summary_interval` / `history_profile_interval` 周期触发。
-> 需立即生成总结时调用 `POST /admin/api/sessions/summarize`。
-
----
-
-## API 一览
-
-### 业务接口（`/api/v1`，租户由 `X-Tenant-ID` 头指定）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/v1/history` | 写入单条会话历史消息 |
-| `POST` | `/api/v1/history/batch` | 批量写入会话历史（采集器推荐） |
-| `POST` | `/api/v1/traces` | 写入 Agent 轨迹步骤 |
-| `POST` | `/api/v1/memory/events` | 写入显式长期记忆事件 |
-| `GET` | `/api/v1/memory/{entity_type}/{entity_id}` | 读取实体画像 |
-| `POST` | `/api/v1/sessions` | 显式创建会话 |
-| `GET` | `/api/v1/sessions/{session_id}` | 读取会话总结 |
-| `POST` | `/api/v1/users` | 显式创建用户及其初始画像 |
-| `GET` | `/api/v1/users/{user_id}` | 聚合读取用户上下文（画像 + 会话列表） |
-
-### 管理接口（`/admin/api`，可选 `Authorization: Bearer <token>`）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/admin/api/users` | 用户/画像列表（游标分页 `limit` + `cursor`） |
-| `GET` | `/admin/api/users/{user_id}` | 用户画像详情 |
-| `GET` | `/admin/api/users/{user_id}/export` | 导出用户全量数据 |
-| `DELETE` | `/admin/api/users/{user_id}` | 删除用户（`?hard=true` 硬删除） |
-| `GET` | `/admin/api/sessions` | 会话总结检索（`user_id` / `q` / `start_time` / `end_time` / 游标） |
-| `GET` | `/admin/api/sessions/{session_id}` | 会话详情 |
-| `GET` | `/admin/api/sessions/{session_id}/history` | 从 ClickHouse 拉取完整会话历史 |
-| `GET` | `/admin/api/sessions/{session_id}/export` | 导出会话数据 |
-| `DELETE` | `/admin/api/sessions/{session_id}` | 删除会话（`?hard=true` 硬删除） |
-| `POST` | `/admin/api/sessions/summarize` | 立即触发一轮会话总结 |
-| `POST` | `/admin/api/index/rebuild` | 重建 Redis ZSET 时间索引 |
-| `GET` | `/admin/api/audit` | 查询审计日志 |
-
-### 运维接口
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/health` | 存活探针 |
-| `GET` | `/ready` | 就绪探针 |
-| `GET` | `/metrics` | Prometheus 指标 |
-| `GET` | `/openapi.json` | OpenAPI 3.0 规范 |
-
-完整字段说明见运行时的 `/docs`。
+> **Note**: writes are published to Pulsar and persisted asynchronously; extraction runs on the
+> `consumer.session_summary_interval` / `consumer.history_profile_interval` cycles. To generate
+> summaries immediately, call `POST /admin/api/sessions/summarize`.
 
 ---
 
-## 配置
+## API
 
-配置文件：`configs/config.yaml`（Viper 加载，支持环境变量覆盖，如 `MNEME_SERVER_PORT`）。
-常用项：
+### Data plane (`/api/v1`, tenant supplied via the `X-Tenant-ID` header)
 
-| 配置段 | 关键项 | 默认值 | 说明 |
-|--------|--------|--------|------|
-| `server` | `port` | `8080` | HTTP 监听端口 |
-| `pulsar` | `url` / `token` | `pulsar://localhost:6650` | 消息总线连接 |
-| `clickhouse` | `auto_migrate` | `true` | 启动时自动建表 |
-| `clickhouse` | `batch_size` / `flush_interval` | `10000` / `5s` | 批量写入阈值 |
-| `clickhouse` | `adaptive_batch_enabled` | `true` | 按吞吐自适应调整批大小 |
-| `clickhouse` | `max_batch_bytes` | `10485760` | 单批最大字节数，防 OOM |
-| `redis` | `pool_size` | `80` | 连接池大小 |
-| `cache` | `session_ttl` / `profile_ttl` | `720h` | 热数据 TTL（**0 表示永不过期**） |
-| `cache` | `use_zset_index` | `true` | ZSET 时间索引替代 SCAN |
-| `consumer` | `session_summary_interval` | `10m` | 会话总结周期 |
-| `consumer` | `history_profile_interval` | `10m` | 画像萃取周期 |
-| `memory.llm` | `enabled` | `false` | 开启后使用 LLM 精炼画像/总结 |
-| `telemetry` | `metrics_enabled` | `true` | 暴露 `/metrics` |
-| `telemetry` | `tracing_enabled` | `false` | OTLP 上报链路 |
-| `admin` | `enabled` / `token` | `true` / 空 | 管理后台开关与静态令牌 |
-| `archiver` | `enabled` / `retain_months` | `false` / `3` | ClickHouse → Parquet → 对象存储归档 |
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/history` | Write a single history message |
+| `POST` | `/api/v1/history/batch` | Write a batch of history messages (recommended) |
+| `POST` | `/api/v1/traces` | Write an agent trace step |
+| `POST` | `/api/v1/memory/events` | Write an explicit long-term memory event |
+| `GET` | `/api/v1/memory/{entity_type}/{entity_id}` | Read an entity profile |
+| `POST` | `/api/v1/sessions` | Explicitly create a session |
+| `GET` | `/api/v1/sessions/{session_id}` | Read a session summary |
+| `POST` | `/api/v1/users` | Explicitly create a user with an initial profile |
+| `GET` | `/api/v1/users/{user_id}` | Read aggregated user context (profile + session list) |
 
-> **生产建议**：`admin.token` 必须设置非空值；对外暴露时在网关层补齐租户级鉴权与限流。
+### Control plane (`/admin/api`, optional `Authorization: Bearer <token>`)
 
----
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/api/users` | List users/profiles (cursor pagination via `limit` + `cursor`) |
+| `GET` | `/admin/api/users/{user_id}` | User profile detail |
+| `GET` | `/admin/api/users/{user_id}/export` | Export all data for a user |
+| `DELETE` | `/admin/api/users/{user_id}` | Delete a user (`?hard=true` for a permanent delete) |
+| `GET` | `/admin/api/sessions` | Search session summaries (`user_id`, `q`, `start_time`, `end_time`, cursor) |
+| `GET` | `/admin/api/sessions/{session_id}` | Session detail |
+| `GET` | `/admin/api/sessions/{session_id}/history` | Full session history read from ClickHouse |
+| `GET` | `/admin/api/sessions/{session_id}/export` | Export session data |
+| `DELETE` | `/admin/api/sessions/{session_id}` | Delete a session (`?hard=true` for a permanent delete) |
+| `POST` | `/admin/api/sessions/summarize` | Trigger a summary pass immediately |
+| `POST` | `/admin/api/index/rebuild` | Rebuild the Redis ZSET time index |
+| `GET` | `/admin/api/audit` | Query the audit log |
 
-## 数据存储
+### Operations
 
-### ClickHouse（冷存储 / 长期留存）
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Liveness probe |
+| `GET` | `/ready` | Readiness probe |
+| `GET` | `/metrics` | Prometheus metrics |
+| `GET` | `/openapi.json` | OpenAPI 3.0 specification |
 
-| 表 | 引擎 | 用途 |
-|----|------|------|
-| `history_message` | `MergeTree` | 原始会话历史，按天分区，TTL 730 天 |
-| `agent_traces` | `MergeTree` | Agent 轨迹步骤 |
-| `entity_memory` | `ReplacingMergeTree` | 实体画像（按 `_version` 去重） |
-| `session_summary` | `ReplacingMergeTree` | 会话总结（按 `_version` 去重） |
-| `audit_log` | `MergeTree` | 治理操作审计 |
-| `session_stats_hourly` | `SummingMergeTree` | 会话维度小时级预聚合 |
-| `user_profile_stats_hourly` | `SummingMergeTree` | 画像维度小时级预聚合 |
-
-列族统一使用 `ZSTD` + `Delta` 编码；`history_message` 额外使用 `DoubleDelta` 以压缩时间戳。
-
-### Redis（热存储 / 低延迟读）
-
-| Key | 类型 | 说明 |
-|-----|------|------|
-| `mneme:memory:{type}:{id}` | Hash | 实体画像 |
-| `mneme:session:{session_id}` | Hash | 会话总结 |
-| `mneme:memver:{type}:{id}` | String | 画像版本号（乐观并发） |
-| `mneme:sessver:{session_id}` | String | 总结版本号 |
-| `mneme:users:{tenant}` | ZSET | 用户时间索引（游标分页） |
-| `mneme:sessions:{tenant}` | ZSET | 会话时间索引（游标分页） |
-| `mneme:bloom:*` | 布隆 | 消息去重 |
-| `mneme:audit:{tenant}` | List | 审计日志（ClickHouse 为权威源） |
-
-热数据读取未命中时自动回源 ClickHouse 并回填 Redis。
+Request/response schemas are served by the running instance at `/docs`.
 
 ---
 
-## 可观测性
+## Configuration
 
-**指标**（前缀 `mnemosyne_mneme_`，`GET /metrics`）
+Configuration lives in `configs/config.yaml` (loaded via Viper; environment variables override file
+values, e.g. `MNEME_SERVER_PORT`). Frequently used keys:
 
-| 指标 | 类型 | 说明 |
-|------|------|------|
-| `http_requests_total` / `http_request_duration_seconds` | Counter / Histogram | HTTP QPS 与延迟 |
-| `pulsar_messages_total` | Counter | 消息发布 / 消费计数 |
-| `clickhouse_write_duration_seconds` / `rows_written_total` / `write_errors_total` | Histogram / Counter | 落库吞吐与失败 |
-| `consumer_lag` / `consumer_errors_total` | Gauge / Counter | 消费积压与错误 |
-| `dedup_filtered_total` | Counter | 布隆去重命中 |
-| `memory_extract_total` / `trace_aggregation_flush_total` | Counter | 萃取与聚合次数 |
-| `quality_check_total` | Counter | 数据质量巡检结果 |
-| `mneme_write_queue_size` / `mneme_write_duration_seconds` | Gauge / Histogram | 写入积压与写延迟 |
+| Section | Key | Default | Description |
+|---------|-----|---------|-------------|
+| `server` | `port` | `8080` | HTTP listen port |
+| `pulsar` | `url` / `token` | `pulsar://localhost:6650` | Message bus connection |
+| `clickhouse` | `auto_migrate` | `true` | Create tables on startup |
+| `clickhouse` | `batch_size` / `flush_interval` | `10000` / `5s` | Write batch thresholds |
+| `clickhouse` | `adaptive_batch_enabled` | `true` | Adapt batch size to observed throughput |
+| `clickhouse` | `max_batch_bytes` | `10485760` | Max bytes per batch (protects against OOM) |
+| `redis` | `pool_size` | `80` | Connection pool size |
+| `cache` | `session_ttl` / `profile_ttl` | `720h` | Hot-data TTL (**`0` means never expire**) |
+| `cache` | `use_zset_index` | `true` | Use ZSET time indexes instead of `SCAN` |
+| `consumer` | `session_summary_interval` | `10m` | Session summarization cycle |
+| `consumer` | `history_profile_interval` | `10m` | Profile extraction cycle |
+| `memory.llm` | `enabled` | `false` | Use an LLM to refine profiles/summaries |
+| `telemetry` | `metrics_enabled` | `true` | Expose `/metrics` |
+| `telemetry` | `tracing_enabled` | `false` | Export traces over OTLP |
+| `admin` | `enabled` / `token` | `true` / empty | Admin console switch and static token |
+| `archiver` | `enabled` / `retain_months` | `false` / `3` | ClickHouse → Parquet → object storage |
 
-**链路追踪**：开启 `telemetry.tracing_enabled` 后经 OTLP HTTP 上报（`otelhttp` 注入 trace_id，同时写入响应头 `X-Request-ID`）。
-
-**日志**：Logrus JSON 输出，自动注入 `trace_id` / `tenant_id` 字段。
-
-**告警与扩缩容**：`deploy/hpa.yaml` 提供 HPA、ServiceMonitor 与 PrometheusRule 样例。
+> **Production checklist**: always set a non-empty `admin.token`, and put tenant-level authn/authz
+> and rate limiting in front of the service at the gateway.
 
 ---
 
-## 部署
+## Storage Model
+
+### ClickHouse (cold storage, long retention)
+
+| Table | Engine | Purpose |
+|-------|--------|---------|
+| `history_message` | `MergeTree` | Raw conversation history, partitioned daily, TTL 730 days |
+| `agent_traces` | `MergeTree` | Agent trace steps |
+| `entity_memory` | `ReplacingMergeTree` | Entity profiles, deduplicated by `_version` |
+| `session_summary` | `ReplacingMergeTree` | Session summaries, deduplicated by `_version` |
+| `audit_log` | `MergeTree` | Governance audit trail |
+| `session_stats_hourly` | `SummingMergeTree` | Hourly pre-aggregation per session |
+| `user_profile_stats_hourly` | `SummingMergeTree` | Hourly pre-aggregation per profile |
+
+Columns use `ZSTD` + `Delta` compression; `history_message` additionally uses `DoubleDelta` for its
+timestamp columns.
+
+### Redis (hot storage, low-latency reads)
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `mneme:memory:{tenant}:{type}:{id}` | Hash | Entity profile |
+| `mneme:memver:{tenant}:{type}:{id}` | String | Profile version (optimistic concurrency) |
+| `mneme:session:{tenant}:{session_id}` | Hash | Session summary |
+| `mneme:sessver:{tenant}:{session_id}` | String | Summary version |
+| `mneme:users:{tenant}` | ZSET | User time index (cursor pagination) |
+| `mneme:sessions:{tenant}` | ZSET | Session time index (cursor pagination) |
+| `mneme:bloom:{pipeline}:{tenant}` | Bloom | Message deduplication |
+| `mneme:audit:{tenant}` | List | Audit log (ClickHouse is the source of truth) |
+
+Hot reads fall through to ClickHouse on a miss and repopulate Redis.
+
+---
+
+## Observability
+
+**Metrics** (prefixed `mnemosyne_mneme_`, exposed at `GET /metrics`):
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `http_requests_total` / `http_request_duration_seconds` | Counter / Histogram | HTTP QPS and latency |
+| `pulsar_messages_total` | Counter | Messages published / consumed |
+| `clickhouse_write_duration_seconds` / `rows_written_total` / `write_errors_total` | Histogram / Counter | Write throughput and failures |
+| `consumer_lag` / `consumer_errors_total` | Gauge / Counter | Consumer backlog and errors |
+| `dedup_filtered_total` | Counter | Bloom-filter dedup hits |
+| `memory_extract_total` / `trace_aggregation_flush_total` | Counter | Extraction and aggregation runs |
+| `quality_check_total` | Counter | Data quality check results |
+| `mneme_write_queue_size` / `mneme_write_duration_seconds` | Gauge / Histogram | Write backlog and write latency |
+
+**Tracing**: set `telemetry.tracing_enabled: true` to export over OTLP HTTP. `otelhttp` injects the
+trace id, which is also returned in the `X-Request-ID` response header.
+
+**Logs**: Logrus JSON output with `trace_id` / `tenant_id` fields injected automatically.
+
+**Alerting & autoscaling**: `deploy/hpa.yaml` provides HPA, ServiceMonitor, and PrometheusRule examples.
+
+---
+
+## Deployment
 
 ### Docker
 
 ```bash
-make docker                       # 构建 mnemosyne-labs/mneme:latest
+make docker                       # builds mnemosyne-labs/mneme:latest
 docker run --rm -p 8080:8080 \
   -v $(pwd)/configs:/app/configs \
   mnemosyne-labs/mneme:latest
 ```
 
-### Docker Compose（依赖 + 服务）
+### Docker Compose (dependencies + service)
 
 ```bash
 make deps-up
-docker compose -f deploy/docker-compose.yaml up -d mneme   # 或自行编写编排
+docker compose -f deploy/docker-compose.yaml up -d mneme
 ```
 
 ### Kubernetes
@@ -295,70 +305,72 @@ kubectl apply -f deploy/hpa.yaml          # HPA + ServiceMonitor + PrometheusRul
 
 ---
 
-## 文件采集器 file-adapter
+## File Adapter
 
-把本地 Markdown / JSONL / 文本文件变成记忆事件，支持增量监听（fsnotify + 去抖 + 断点续传）。
+`file-adapter` turns local Markdown / JSONL / text files into memory events, with incremental
+watching (fsnotify + debounce + resumable state).
 
 ```bash
 ./bin/file-adapter -config ./configs/config.yaml -dir ./data/inbox -mode http
 ```
 
-| 参数 | 说明 |
-|------|------|
-| `-config` | 配置文件路径 |
-| `-dir` | 监听目录（覆盖配置） |
-| `-scan` | 启动时扫描存量文件，默认 `true` |
-| `-mode` | 投递模式：`http`（默认，推荐）或 `pulsar` |
+| Flag | Description |
+|------|-------------|
+| `-config` | Path to the configuration file |
+| `-dir` | Watch directory (overrides config) |
+| `-scan` | Scan pre-existing files on startup (default `true`) |
+| `-mode` | Delivery mode: `http` (default, recommended) or `pulsar` |
 
 ---
 
-## 项目结构
+## Project Layout
 
 ```
 .
 ├── cmd/
-│   ├── mneme/            # 主服务入口
-│   └── file-adapter/     # 文件采集器入口
+│   ├── mneme/            # main service entrypoint
+│   └── file-adapter/     # file collector entrypoint
 ├── internal/
-│   ├── api/              # HTTP 路由、handler、中间件、管理后台、OpenAPI
-│   ├── app/              # 依赖装配与生命周期
-│   ├── archiver/         # ClickHouse → Parquet → 对象存储归档、质量巡检
-│   ├── config/           # Viper 配置加载与默认值
-│   ├── consumer/         # Pulsar 消费、轨迹聚合、画像/总结萃取
-│   ├── filewatcher/      # 文件监听与解析
-│   └── service/          # 摄取、画像与会话存储、审计、HTTP sink
+│   ├── api/              # HTTP routing, handlers, middleware, admin console, OpenAPI
+│   ├── app/              # dependency wiring and lifecycle
+│   ├── archiver/         # ClickHouse → Parquet → object storage, quality checks
+│   ├── config/           # Viper configuration loading and defaults
+│   ├── consumer/         # Pulsar consumers, trace aggregation, profile/summary extraction
+│   ├── filewatcher/      # file watching and parsing
+│   └── service/          # ingestion, profile/session stores, audit, HTTP sink
 ├── pkg/
-│   ├── cache/            # Redis 客户端与 L2 缓存
-│   ├── logger/           # 结构化日志
-│   ├── messagebus/       # Pulsar 封装
-│   ├── metrics/          # Prometheus 指标定义
-│   ├── models/           # 领域模型与校验
-│   ├── storage/          # 存储抽象与 ClickHouse 实现
-│   └── tracing/          # OpenTelemetry 封装
-├── configs/config.yaml   # 配置样例
+│   ├── cache/            # Redis client and L2 cache
+│   ├── logger/           # structured logging
+│   ├── messagebus/       # Pulsar wrapper
+│   ├── metrics/          # Prometheus metric definitions
+│   ├── models/           # domain models and validation
+│   ├── storage/          # storage abstractions and the ClickHouse implementation
+│   └── tracing/          # OpenTelemetry wrapper
+├── tools/yamlcheck/      # YAML syntax and duplicate-key checker (make yaml-lint)
+├── configs/config.yaml   # sample configuration
 ├── deploy/               # docker-compose / k8s / HPA
-├── tools/yamlcheck/      # YAML 语法与重复键校验（make yaml-lint）
-└── mneme.http            # 可执行请求集合
+└── mneme.http            # runnable request collection
 ```
 
-常用命令：`make build`、`make test`、`make lint`、`make yaml-lint`、`make deps-up`、`make docker`。
+Common commands: `make build`, `make test`, `make lint`, `make yaml-lint`, `make deps-up`, `make docker`.
 
 ---
 
-## 路线图
+## Roadmap
 
-- [ ] ClickHouse 物化视图自动创建与增量刷新（当前提供预聚合目标表）
-- [ ] Redis Cluster 模式与租户级 hash tag
-- [ ] L2 本地缓存接入查询链路
-- [ ] 质量巡检结果接入 PrometheusRule 告警闭环
-- [ ] 多租户配额与限流
+- [ ] Auto-create ClickHouse materialized views for the pre-aggregation tables (target tables ship today)
+- [ ] Redis Cluster support (universal client + `{tenant}` hash tags + master-fanout index rebuild)
+- [ ] Wire the L2 cache into the query path
+- [ ] Feed quality-check results into PrometheusRule alerts
+- [ ] Per-tenant quotas and rate limiting
 
 ---
 
-## 参与贡献
+## Contributing
 
-请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)、[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) 与 [SECURITY.md](SECURITY.md)。
+Please read [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and
+[SECURITY.md](SECURITY.md).
 
-## 许可证
+## License
 
 [Apache License 2.0](LICENSE)

@@ -28,7 +28,7 @@ jobs:
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
-            echo "::error::以下文件未通过 gofmt："
+            echo "::error::The following files are not gofmt-clean:"
             echo "$unformatted"
             gofmt -s -d .
             exit 1

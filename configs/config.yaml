@@ -26,15 +26,15 @@ clickhouse:
   max_idle_conns: 5
   dial_timeout: 10s
   batch_size: 10000
-  max_batch_bytes: 10485760    # 10MB
+  max_batch_bytes: 10485760    # 10MB, guards against oversized batches
   flush_interval: 5s
   max_retries: 5
-  auto_migrate: true
-  # 自适应批次控制
+  auto_migrate: true           # create tables on startup
+  # Adaptive batch sizing
   adaptive_batch_enabled: true
   min_batch_size: 1000
   max_batch_size: 100000
-  target_flush_latency: 100ms  # 目标刷新延迟 100ms
+  target_flush_latency: 100ms  # target flush latency
 
 redis:
   addr: "localhost:6379"
@@ -49,23 +49,24 @@ redis:
   conn_max_lifetime: 1h
 
 cache:
-  session_ttl: 720h      # 会话缓存 TTL，0 = 永不过期；例: 720h (30天)，生产建议 720h
-  profile_ttl: 720h      # 用户画像缓存 TTL，0 = 永不过期；例: 720h (30天)，生产建议 720h
-  use_zset_index: true   # 开启 ZSET 索引替代 SCAN（生产环境建议开启）
+  session_ttl: 720h     # session cache TTL (0 = never expire; 720h = 30 days recommended)
+  profile_ttl: 720h     # user profile cache TTL (0 = never expire; 720h = 30 days recommended)
+  use_zset_index: true  # ZSET time indexes instead of SCAN (recommended in production)
 
 consumer:
   history_enabled: true
   traces_enabled: true
   memory_enabled: true
-  # 轨迹聚合窗口
+  # Trace aggregation window
   trace_aggregate_timeout: 30s
-  # 长期记忆萃取周期
+  # Long-term memory extraction cycle
   memory_extract_interval: 10m
-  # 从对话历史中萃取用户画像（与显式记忆事件汇聚到同一张 entity_memory）
+  # Extract user profiles from conversation history (merged into the same entity_memory table as
+  # explicit memory events)
   history_profile_enabled: true
   history_profile_interval: 10m
   history_profile_max_messages: 500
-  # 会话级总结（按 session_id 生成"本次对话聊了什么"，独立存储于 session_summary）
+  # Session-level summaries ("what did this conversation cover"), stored in session_summary
   session_summary_enabled: true
   session_summary_interval: 10m
   session_summary_max_messages: 2000
@@ -87,10 +88,10 @@ filewatcher:
   state_file: "./data/.filewatcher_state.json"
   tenant_id: "default"
 
-# 独立文件采集器 file-adapter 的投递配置（主服务内嵌 filewatcher 时忽略本节）
+# Standalone file collector (file-adapter); ignored when the main service runs filewatcher.
 adapter:
-  # http: 推送到服务端批量 API（默认，推荐，无需感知消息总线拓扑）
-  # pulsar: 直连消息总线（高吞吐可信环境）
+  # http: POST batches to the server API (default, recommended; no knowledge of the message bus)
+  # pulsar: publish directly to the message bus (high-throughput, trusted environments)
   mode: http
   http:
     endpoint: "http://localhost:8080/api/v1/history/batch"
@@ -100,12 +101,13 @@ adapter:
     backoff_base: 500ms
     max_batch_size: 500
 
-# 轻量后台管理界面（用户/画像浏览、会话检索、数据治理）
-# 默认关闭；生产建议配合网关鉴权。token 非空时要求 Authorization: Bearer <token>。
+# Lightweight admin console (browse profiles, search sessions, data governance)
+# Disabled by default; put it behind gateway auth in production.
+# When token is non-empty, requests must send: Authorization: Bearer <token>
 admin:
   enabled: true
   token: ""
-  page_title: "Mneme 管理后台"
+  page_title: "Mneme Admin"
 
 archiver:
   enabled: false
@@ -113,7 +115,8 @@ archiver:
   retain_months: 3
   tables: ["history_message"]
   export_dir: "./data/archive"
-  # ClickHouse HTTP 接口地址（客户端侧 Parquet 导出）；留空则从 clickhouse.hosts 推导（端口换 8123）
+  # ClickHouse HTTP endpoint (used for Parquet export); derived from clickhouse.hosts when empty
+  # (port 9000 -> 8123)
   http_addr: ""
   oss:
     endpoint: ""

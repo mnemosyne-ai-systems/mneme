@@ -1,37 +1,58 @@
-# 更新日志
+# Changelog
 
-本文件记录 Mneme 的重要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
-版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+All notable changes to Mneme are documented in this file. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows
+[Semantic Versioning](https://semver.org/).
 
-## [未发布]
+## [Unreleased]
 
-### 新增
+### Added
 
-- **README.md**：项目介绍、快速开始、API 一览、配置说明、存储模型与部署指南。
-- **开源治理文件**：`LICENSE`（Apache-2.0）、`CONTRIBUTING.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`。
-- **CI**：GitHub Actions（gofmt / vet / race 测试 / Docker 构建），Tag 发布自动构建多架构镜像与二进制。
-- **Issue 与 PR 模板**、Dependabot 依赖升级配置。
+- **README.md** — overview, features, architecture, quick start, API reference, configuration
+  table, storage model, observability, and deployment guide.
+- **Open source governance files** — `LICENSE` (Apache-2.0), `CONTRIBUTING.md`, `SECURITY.md`,
+  `CODE_OF_CONDUCT.md`.
+- **CI** — GitHub Actions running gofmt checks, `go vet`, YAML validation, race-enabled tests with
+  coverage, builds, and a Docker build; tagged releases build multi-architecture images and binaries
+  and publish a GitHub Release automatically.
+- **Issue and PR templates**, plus Dependabot for Go modules, GitHub Actions, and Docker.
 
-### 变更
+### Changed
 
-- **模块路径**：`github.com/mnemosyne/mneme` → `github.com/mnemosyne-labs/mneme`（不兼容变更，导入路径需同步）。
-- **镜像名**：`mnemosyne/mneme` → `mnemosyne-labs/mneme`。
+- **Module path**: `github.com/mnemosyne/mneme` → `github.com/mnemosyne-labs/mneme` (breaking —
+  import paths must be updated).
+- **Image name**: `mnemosyne/mneme` → `mnemosyne-labs/mneme`.
+- **Documentation is now English-first**; code comments, the admin console UI, and OpenAPI
+  descriptions remain in Chinese.
+
+### Fixed
+
+- `deploy/hpa.yaml`: removed duplicate `annotations` / `severity` keys in the PrometheusRule (which
+  prevented Prometheus from loading the rule) and corrected the quality-check and consumer-lag
+  alert expressions to match the real metric names.
+- Added `tools/yamlcheck` (wired into `make yaml-lint` and CI) to catch YAML duplicate keys.
 
 ## [0.1.0] - 2026-10-14
 
-首个可用版本。
+First usable release.
 
-### 核心能力
+### Core capabilities
 
-- 三条写入管道：会话历史、Agent 轨迹、长期记忆事件，经 Pulsar 解耦异步落库。
-- 双存储模型：Redis 热数据（Hash / ZSET 索引 / TTL）+ ClickHouse 冷数据（压缩 + TTL）。
-- 画像与总结自动萃取：规则实现开箱即用，可选 LLM 精炼（`memory.llm.enabled`）。
-- 统一查询接口：实体画像、会话总结、用户聚合上下文。
-- 数据治理：软/硬删除、游标分页、时间过滤、数据导出、审计日志（ClickHouse）。
-- 内置管理后台 `/admin` 与 Swagger UI `/docs`。
-- 可观测性：Prometheus 指标、OpenTelemetry Trace、结构化 JSON 日志、健康/就绪探针。
-- 文件采集器 `file-adapter`：增量监听本地文件并投递为记忆事件。
-- 运维能力：ClickHouse → Parquet → 对象存储归档、数据质量巡检、HPA 与告警规则样例。
+- Three ingestion pipelines — conversation history, agent traces, and explicit memory events —
+  decoupled through Pulsar and persisted asynchronously.
+- Hot/cold storage split: Redis (Hash, ZSET indexes, TTL) for reads, ClickHouse (compression, TTL)
+  for retention and analytics.
+- Automatic profile and summary extraction, rule-based out of the box with optional LLM refinement
+  (`memory.llm.enabled`).
+- Unified query API: entity profiles, session summaries, and aggregated user context.
+- Data governance: soft/hard delete, cursor pagination, time filtering, export, and an audit log in
+  ClickHouse.
+- Admin console at `/admin` and Swagger UI at `/docs`.
+- Observability: Prometheus metrics, OpenTelemetry tracing, structured JSON logs, and
+  health/readiness probes.
+- `file-adapter` for incremental ingestion of local files as memory events.
+- Operations: ClickHouse → Parquet → object storage archival, data quality checks, and HPA/alerting
+  examples.
 
-[未发布]: https://github.com/mnemosyne-labs/mneme/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mnemosyne-labs/mneme/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/mnemosyne-labs/mneme/releases/tag/v0.1.0

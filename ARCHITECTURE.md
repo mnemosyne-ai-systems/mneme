@@ -1,229 +1,292 @@
-# Mneme 架构说明
+# Mneme Architecture
 
-Mneme 是一个面向 Agent 的**长期记忆服务**：把对话历史、Agent 轨迹、显式记忆事件汇聚成
-**用户画像（跨会话稳定属性）** 与 **会话总结（单次对话内容）**，并提供统一查询接口。
+Mneme is a **long-term memory service for AI agents**. It aggregates conversation history, agent
+traces, and explicit memory events into **user profiles** (stable attributes across sessions) and
+**session summaries** (what a single conversation covered), and serves them through a unified API.
 
-模块路径：`github.com/mnemosyne-labs/mneme`（Go 1.25，单仓库单模块）。
+Module path: `github.com/mnemosyne-labs/mneme` (Go 1.25, single repository, single module).
+
+> **Note on language**: this document and the other Markdown files are written in English for open
+> source contributions. Code comments, the admin console UI, and the OpenAPI descriptions remain in
+> Chinese, since those are consumed by the original team.
 
 ---
 
-## 1. 整体数据流
+## 1. End-to-end data flow
 
 ```
-                          ┌──────────────────────────────┐
-   文件 / Agent 客户端 ──▶ │  HTTP API  (internal/api)     │
-   POST /api/v1/history   │  /history /history/batch      │
-   /memory/events /traces │  /memory/events /traces       │
-                          └───────────┬──────────────────┘
-                                      │  Publish
-                                      ▼
-                          ┌──────────────────────────────┐
-                          │  Pulsar  (3 个 Topic)          │
-                          │  mneme-history / mneme-traces  │
-                          │  / mneme-memory                │
-                          └───────────┬──────────────────┘
-                                      │  Subscribe
-                 ┌────────────────────┼────────────────────────┐
-                 ▼                    ▼                         ▼
-        HistoryConsumer       TracesConsumer           MemoryConsumer
-        (原始历史落库)         (轨迹聚合落库)            (记忆事件 → 画像)
-                 │                    │                    │  extractEntityProfile
-                 │                    │                    ▼
-                 │                    │            HistoryProfileConsumer
-                 │                    │            (对话历史 → 同一张画像表)
-                 │                    │                    │
-                 │                    │        SessionSummaryConsumer
-                 │                    │        (对话历史 → 会话总结，增量 refine)
-                 └─────────┬──────────┴─────────────────────┘
-                           ▼
-            ┌──────────────────────────────────────────┐
-            │  ClickHouse                               │
-            │  history_message                          │
-            │  agent_traces   (TTL 7 天)                 │
-            │  entity_memory  (ReplacingMergeTree)       │
-            │  session_summary (ReplacingMergeTree)      │
-            └──────────────────────────────────────────┘
-                           ▲
-            Redis (热数据)  │  画像 Hash / 会话 Hash / 版本号计数器
-            mneme:memory:*  │  mneme:session:*  mneme:sessver:*
-                           └──────────────────────────────────┘
-                                      │
-                                      ▼
-                         查询接口 (读 Redis 热数据)
-                         GET /api/v1/memory/{type}/{id}
-                         GET /api/v1/sessions/{session_id}
-                         GET /api/v1/users/{user_id}   ← 聚合：画像 + 会话列表
+                           ┌──────────────────────────────┐
+   Files / Agent clients ─▶│  HTTP API  (internal/api)     │
+   POST /api/v1/history    │  /history /history/batch      │
+   /memory/events /traces  │  /memory/events /traces       │
+                           └───────────┬──────────────────┘
+                                       │  publish
+                                       ▼
+                           ┌──────────────────────────────┐
+                           │  Pulsar  (3 topics)          │
+                           │  mneme-history / mneme-traces │
+                           │  / mneme-memory               │
+                           └───────────┬──────────────────┘
+                                       │  subscribe
+                  ┌────────────────────┼────────────────────────┐
+                  ▼                    ▼                         ▼
+         HistoryConsumer       TracesConsumer           MemoryConsumer
+         (raw history → CH)    (trace agg → CH)        (events → profile)
+                  │                    │                    │  extractEntityProfile
+                  │                    │                    ▼
+                  │                    │            HistoryProfileConsumer
+                  │                    │            (history → same profile table)
+                  │                    │                    │
+                  │                    │        SessionSummaryConsumer
+                  │                    │        (history → summary, incremental refine)
+                  └─────────┬──────────┴─────────────────────┘
+                            ▼
+             ┌──────────────────────────────────────────┐
+             │  ClickHouse                               │
+             │  history_message   (TTL 730 days)         │
+             │  agent_traces      (TTL 7 days)           │
+             │  entity_memory     (ReplacingMergeTree)   │
+             │  session_summary   (ReplacingMergeTree)   │
+             │  audit_log         (TTL 90 days)          │
+             └──────────────────────────────────────────┘
+                            ▲
+             Redis (hot)    │  profile Hash / session Hash / version counters
+             mneme:memory:* │  mneme:session:*  mneme:sessver:*
+                            └──────────────────────────────────┘
+                                       │
+                                       ▼
+                          Query API (reads Redis first)
+                          GET /api/v1/memory/{type}/{id}
+                          GET /api/v1/sessions/{session_id}
+                          GET /api/v1/users/{user_id}   ← aggregate: profile + sessions
 ```
 
-**设计要点**：所有写入先经 Pulsar 解耦，consumer 异步落库；Redis 作为热存储支撑低延迟查询，
-ClickHouse 作为冷存储支撑分析与长期保留。两条萃取管线（用户画像 / 会话总结）复用同一个
-`LLMExtractor`，因此 `memory.llm.enabled` 一旦开启，二者会**同时**升级为 LLM 萃取；
-未开启时全部走 fallback，**零额外 LLM 成本**。
+**Key design points**
+
+- All writes are decoupled through Pulsar; consumers persist asynchronously.
+- Redis serves low-latency reads, ClickHouse serves analytics and long retention.
+- Reads hit Redis first and fall through to ClickHouse on a miss, repopulating Redis.
+- The two extraction pipelines (user profile, session summary) share the same `LLMExtractor`.
+  Enabling `memory.llm.enabled` therefore upgrades **both** to LLM extraction at once; when it is
+  disabled everything falls back to rules, i.e. **zero additional LLM cost**.
 
 ---
 
-## 2. 关键组件
+## 2. Core components
 
-| 组件 | 路径 | 职责 |
-|------|------|------|
-| API 接入层 | `internal/api` | 校验、发布到 Pulsar、查询路由 |
-| IngestService | `internal/service` | 封装 `Publish*` 与 Topic 路由 |
-| HTTPHistorySink | `internal/service/httpsink.go` | file-adapter 默认投递目标（HTTP 批量） |
-| HistoryConsumer | `internal/consumer` | 原始对话历史批量写入 `history_message`（布隆去重） |
-| TracesConsumer | `internal/consumer` | Agent 轨迹按 `request_id` 聚合后写入 `agent_traces` |
-| MemoryConsumer | `internal/consumer` | 记忆事件 → `extractEntityProfile` → `entity_memory` |
-| HistoryProfileConsumer | `internal/consumer` | 对话历史（含 user_id）按用户缓冲 → 同一张画像表 |
-| SessionSummaryConsumer | `internal/consumer` | 对话历史按 `session_id` 缓冲 → `session_summary`，**增量 refine** |
-| LLMExtractor | `internal/service/extractor.go` | 同时实现 `MemoryExtractor` 与 `SessionSummarizer` |
-| ProfileStore | `internal/service` | Redis Hash + ClickHouse，版本号 `Incr` |
-| SessionSummaryStore | `internal/service/session_store.go` | Redis Hash + ClickHouse，版本号 `Incr`，按用户 `SCAN` 列出 |
-| BatchInserter | `pkg/storage/clickhouse` | 批量写入 + 定时刷新 + 指数退避重试 |
-
----
-
-## 3. 两条萃取管线
-
-### 3.1 用户画像（HistoryProfileConsumer）
-- 订阅 `mneme-history`，按 `(tenant, user_id)` 缓冲（`MaxMessagesPerUser`，默认 500，超出丢最旧）
-- 每条消息包装为 `event_type="message"` 的 `MemoryEvent`，喂给与 `MemoryConsumer` **相同**的 `extractor`
-- 定时窗口（`history_profile_interval`，默认 10m）触发，写入 **同一张 `entity_memory` 表**
-- 效果：显式记忆事件与对话内容汇聚到同一用户画像，描述"这个用户是谁"
-
-### 3.2 会话总结（SessionSummaryConsumer）
-- 订阅 `mneme-history`，按 `(tenant, session_id)` 缓冲（`MaxMessagesPerSession`，默认 2000）
-- 定时窗口（`session_summary_interval`，默认 10m）触发，生成自然语言总结，写入独立 `session_summary` 表，描述"这次对话聊了什么"
-- **增量更新**：每轮先从 store 读取上一轮总结 `prev`；若有则只把本轮新增消息交给
-  `RefineSummary` 合并（避免每次全量重算），`MessageCount` 累加；无旧摘要才全量 `Summarize`
-- 若开启 LLM：`Summarize` / `RefineSummary` 走模型；否则 `SummaryFallback` / `SummaryRefineFallback`
-  退化为首尾消息拼接
+| Component | Path | Responsibility |
+|-----------|------|----------------|
+| API layer | `internal/api` | Validation, publishing to Pulsar, query routing |
+| IngestService | `internal/service` | Wraps `Publish*` and topic routing |
+| HTTPHistorySink | `internal/service/httpsink.go` | Default delivery target for file-adapter (batched HTTP) |
+| HistoryConsumer | `internal/consumer` | Batched writes of raw history into `history_message` (bloom dedup) |
+| TracesConsumer | `internal/consumer` | Aggregates traces by `request_id`, writes `agent_traces` |
+| MemoryConsumer | `internal/consumer` | Memory events → `extractEntityProfile` → `entity_memory` |
+| HistoryProfileConsumer | `internal/consumer` | Buffers history per `(tenant, user_id)` → the same profile table |
+| SessionSummaryConsumer | `internal/consumer` | Buffers history per `session_id` → `session_summary`, **incremental refine** |
+| LLMExtractor | `internal/service/extractor.go` | Implements both `MemoryExtractor` and `SessionSummarizer` |
+| ProfileStore | `internal/service/memory_store.go` | Redis Hash + ClickHouse, version via `Incr` |
+| SessionSummaryStore | `internal/service/session_store.go` | Redis Hash + ClickHouse, version via `Incr`, ZSET or `SCAN` listing |
+| AuditStore | `internal/service/audit.go` | Audit log writes; ClickHouse is the source of truth |
+| BatchInserter | `pkg/storage/clickhouse/inserter.go` | Batched inserts + timed flush + exponential-backoff retry + adaptive batch sizing |
+| QualityChecker | `internal/archiver/quality_check.go` | Data quality checks (profile completeness, summary coverage, message integrity, ZSET consistency, partition health) |
 
 ---
 
-## 4. 配置（`configs/config.yaml`）
+## 3. The two extraction pipelines
 
-| 配置项 | 默认 | 说明 |
-|--------|------|------|
-| `consumer.history_profile_enabled` | `true` | 对话历史萃取用户画像 |
-| `consumer.history_profile_interval` | `10m` | 画像萃取周期 |
-| `consumer.history_profile_max_messages` | `500` | 单用户缓冲上限 |
-| `consumer.session_summary_enabled` | `true` | 会话级总结 |
-| `consumer.session_summary_interval` | `10m` | 总结生成周期 |
-| `consumer.session_summary_max_messages` | `2000` | 单会话缓冲上限 |
-| `memory.llm.enabled` | `false` | 开启后画像与总结均走 LLM |
-| `adapter.mode` | `http` | file-adapter 投递方式：`http`（默认）或 `pulsar` |
-| `cache.session_ttl` | `720h` | 会话缓存 TTL（0=永不过期，建议 720h） |
-| `cache.profile_ttl` | `720h` | 用户画像缓存 TTL（0=永不过期，建议 720h） |
-| `cache.use_zset_index` | `false` | 启用 ZSET 索引替代 SCAN（实验性） |
+### 3.1 User profile (`HistoryProfileConsumer`)
 
----
+- Subscribes to `mneme-history`, buffers per `(tenant, user_id)`
+  (`history_profile_max_messages`, default 500; oldest entries are dropped when full).
+- Wraps each message into a `MemoryEvent` with `event_type="message"` and feeds the **same**
+  `extractor` used by `MemoryConsumer`.
+- A timer (`history_profile_interval`, default `10m`) triggers extraction into the **same**
+  `entity_memory` table.
+- Net effect: explicit memory events and conversation content converge into a single profile that
+  answers "who is this user".
 
-## 5. 对外接口
+### 3.2 Session summary (`SessionSummaryConsumer`)
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/v1/history` | 单条对话历史 |
-| POST | `/api/v1/history/batch` | 批量对话历史（file-adapter 默认走这条） |
-| POST | `/api/v1/traces` | Agent 轨迹 |
-| POST | `/api/v1/memory/events` | 显式记忆事件 |
-| POST | `/api/v1/sessions` | 创建会话（先写 CH 再写 Redis） |
-| POST | `/api/v1/users` | 创建用户（先写 CH 再写 Redis） |
-| GET | `/api/v1/memory/{entity_type}/{entity_id}` | 读取实体画像 |
-| GET | `/api/v1/sessions/{session_id}` | 读取会话总结 |
-| GET | `/api/v1/users/{user_id}` | **聚合**：用户画像 + 其全部会话列表 |
-| GET | `/openapi.json` | OpenAPI 3 文档 |
-| GET | `/docs` | 轻量管理界面（Swagger UI，可在线试用） |
-| GET | `/metrics` | Prometheus 指标 |
-| GET | `/health` `/ready` | 健康检查 / 就绪检查 |
-
-所有受租户隔离的接口需带 `X-Tenant-ID` 请求头（缺失时部分接口回退到消息体内的 `tenant_id`）。
+- Subscribes to `mneme-history`, buffers per `(tenant, session_id)`
+  (`session_summary_max_messages`, default 2000).
+- A timer (`session_summary_interval`, default `10m`) generates a natural-language summary into the
+  separate `session_summary` table — "what did this conversation cover".
+- **Incremental update**: each round first reads the previous summary; if one exists, only the new
+  messages are passed to `RefineSummary` for merging (instead of recomputing everything), and
+  `MessageCount` accumulates. Without a previous summary it falls back to a full `Summarize`.
+- With an LLM enabled, `Summarize` / `RefineSummary` call the model; otherwise
+  `SummaryFallback` / `SummaryRefineFallback` degrade to first/last message concatenation.
 
 ---
 
-## 6. 部署（`deploy/docker-compose.yaml`）
+## 4. Configuration (`configs/config.yaml`)
 
-- `pulsar`：消息总线；`pulsar-init` 一次性容器负责建租户 / 命名空间 / Topic
-- `clickhouse`：冷存储，`AutoMigrate` 自动建表（含 `session_summary`）
-- `redis`：热存储（画像 Hash / 会话 Hash / 版本号计数器）
-- `mneme`：主服务；`file-adapter`：独立二进制，扫描本地文件经 HTTP 批量写入历史
-
-清除 Pulsar 损坏数据：`docker compose down -v` 并移除 `deploy_pulsar-data` 卷后重启。
+| Key | Default | Description |
+|-----|---------|-------------|
+| `consumer.history_profile_enabled` | `true` | Extract user profiles from conversation history |
+| `consumer.history_profile_interval` | `10m` | Profile extraction cycle |
+| `consumer.history_profile_max_messages` | `500` | Per-user buffer cap |
+| `consumer.session_summary_enabled` | `true` | Session-level summarization |
+| `consumer.session_summary_interval` | `10m` | Summary generation cycle |
+| `consumer.session_summary_max_messages` | `2000` | Per-session buffer cap |
+| `memory.llm.enabled` | `false` | Route profiles and summaries through an LLM |
+| `adapter.mode` | `http` | file-adapter delivery: `http` (default) or `pulsar` |
+| `cache.session_ttl` | `720h` | Session cache TTL (`0` = never expire; 720h recommended) |
+| `cache.profile_ttl` | `720h` | Profile cache TTL (`0` = never expire; 720h recommended) |
+| `cache.use_zset_index` | `true` | Use ZSET indexes instead of `SCAN` |
 
 ---
 
-## 7. 管理界面
+## 5. HTTP surface
 
-### 7.1 开发联调（Swagger UI）
-浏览器打开 `/docs` 即进入 Swagger UI，从 `/openapi.json` 加载规格，可在页面内对每个接口
-直接 **Try it out**（已预填示例请求体）。配合 `X-Tenant-ID` 头即可联调全部查询与写入接口。
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/history` | Single history message |
+| POST | `/api/v1/history/batch` | Batched history (default path used by file-adapter) |
+| POST | `/api/v1/traces` | Agent traces |
+| POST | `/api/v1/memory/events` | Explicit memory events |
+| POST | `/api/v1/sessions` | Create a session (ClickHouse first, then Redis) |
+| POST | `/api/v1/users` | Create a user (ClickHouse first, then Redis) |
+| GET | `/api/v1/memory/{entity_type}/{entity_id}` | Read an entity profile |
+| GET | `/api/v1/sessions/{session_id}` | Read a session summary |
+| GET | `/api/v1/users/{user_id}` | **Aggregate**: user profile + all its session summaries |
+| GET | `/openapi.json` | OpenAPI 3 document |
+| GET | `/docs` | Swagger UI for trying requests |
+| GET | `/metrics` | Prometheus metrics |
+| GET | `/health`, `/ready` | Liveness / readiness probes |
 
-### 7.2 后台管理系统（admin）
-由 `internal/api/admin_handler.go` + 内嵌页面 `admin_ui.html` 提供，**默认关闭**，需在
-`configs/config.yaml` 中开启：
+All tenant-scoped endpoints require the `X-Tenant-ID` header (some endpoints fall back to the
+`tenant_id` field in the request body when the header is absent).
+
+---
+
+## 6. Deployment (`deploy/docker-compose.yaml`)
+
+- `pulsar` — message bus; the one-shot `pulsar-init` container creates tenant / namespace / topics.
+- `clickhouse` — cold storage; `AutoMigrate` creates the tables on startup.
+- `redis` — hot storage (profile Hash / session Hash / version counters).
+- `mneme` — the main service; `file-adapter` — a standalone binary that scans local files and
+  delivers them as batched history over HTTP.
+
+To purge corrupted Pulsar state: `docker compose down -v`, remove the `deploy_pulsar-data` volume,
+then restart.
+
+---
+
+## 7. Admin console
+
+### 7.1 Swagger UI (development)
+
+Open `/docs` for Swagger UI, loaded from `/openapi.json`. Every endpoint supports **Try it out**
+with prefilled example bodies; add an `X-Tenant-ID` header to exercise tenant-scoped routes.
+
+### 7.2 Admin console (`/admin`)
+
+Provided by `internal/api/admin_handler.go` plus the embedded `admin_ui.html` page. It is **disabled
+by default**; enable it in `configs/config.yaml`:
 
 ```yaml
 admin:
-  enabled: true      # 默认 false
-  token: ""          # 可选静态令牌；非空时要求 Authorization: Bearer <token>
-  page_title: "Mneme 管理后台"
+  enabled: true      # default false
+  token: ""          # optional static token; when set, requires Authorization: Bearer <token>
+  page_title: "Mneme Admin"
 ```
 
-开启后提供：
+Once enabled:
 
-- 页面入口 `GET /admin`（内嵌 HTML，无需独立前端构建）
-- 用户与画像浏览：`GET /admin/api/users?limit=&cursor=`、`GET /admin/api/users/{user_id}`
-- 会话总结检索：`GET /admin/api/sessions?user_id=&q=&limit=&cursor=`（按结束时间倒序）
-- 数据治理：
-  - 软删除用户及其全部会话：`DELETE /admin/api/users/{user_id}`（可恢复，标记 `_deleted`）
-  - 硬删除用户及其全部会话：`DELETE /admin/api/users/{user_id}?hard=true`（不可恢复，彻底清理）
-  - 软删除单个会话：`DELETE /admin/api/sessions/{session_id}`
-  - 硬删除单个会话：`DELETE /admin/api/sessions/{session_id}?hard=true`
-  - 导出用户（画像 + 会话 JSON）：`GET /admin/api/users/{user_id}/export`
-  - 导出单个会话（JSON）：`GET /admin/api/sessions/{session_id}/export`
-- 审计日志：`GET /admin/api/audit?limit=`（记录删除/导出等变更操作，最新在前）
-- 立即触发会话总结：`POST /admin/api/sessions/summarize`（无需等待定时窗口）
+- Entry point `GET /admin` (embedded HTML, no separate frontend build).
+- User and profile browsing: `GET /admin/api/users?limit=&cursor=`, `GET /admin/api/users/{user_id}`.
+- Session summary search: `GET /admin/api/sessions?user_id=&q=&limit=&cursor=` (sorted by end time,
+  descending).
+- Data governance:
+  - Soft-delete a user and all their sessions: `DELETE /admin/api/users/{user_id}` (recoverable,
+    marks `_deleted`).
+  - Hard-delete a user and all their sessions: `DELETE /admin/api/users/{user_id}?hard=true`
+    (irreversible).
+  - Soft-delete a session: `DELETE /admin/api/sessions/{session_id}`.
+  - Hard-delete a session: `DELETE /admin/api/sessions/{session_id}?hard=true`.
+  - Export a user (profile + session JSON): `GET /admin/api/users/{user_id}/export`.
+  - Export a session (JSON): `GET /admin/api/sessions/{session_id}/export`.
+- Audit log: `GET /admin/api/audit?limit=` (deletes/exports are recorded, newest first).
+- Trigger summarization immediately: `POST /admin/api/sessions/summarize` (no need to wait for the
+  timer).
+- Rebuild the Redis ZSET time index: `POST /admin/api/index/rebuild`.
 
-列表与检索支持**游标分页**：请求返回 `next_cursor`，将其作为下一页的 `cursor` 参数即可翻页。
-会话检索与用户聚合视图中的会话列表均**按结束时间倒序**（最近的在前）。
+Lists and search results use **cursor pagination**: responses return `next_cursor`, which you pass
+back as the `cursor` parameter of the next page. Session search and the session list in the
+aggregated user view are sorted by end time descending (newest first).
 
-鉴权说明：仅做薄保护——若配置了 `token`，所有 `/admin/api/*` 需带
-`Authorization: Bearer <token>`（导出类 GET 链接也支持 `?token=` / `?__t=` 携带）。
-生产环境建议将 `/admin` 置于网关或反向代理之后做真正的访问控制。
+**Authorization** is intentionally thin: if `token` is configured, all `/admin/api/*` requests must
+carry `Authorization: Bearer <token>` (export GET links may also pass `?token=` or `?__t=`). In
+production, place `/admin` behind a gateway or reverse proxy that performs real access control.
 
-后端支撑方法：`ProfileStore.SaveUserInfo/ListProfiles/DeleteProfile/PurgeProfile`、
+Supporting methods: `ProfileStore.SaveUserInfo/ListProfiles/DeleteProfile/PurgeProfile`,
 `SessionSummaryStore.SaveSessionInfo/SearchSessions/DeleteSession/PurgeSession/
-DeleteSessionsByUser/PurgeSessionsByUser`，以及 `AuditStore.Append/List`
-（Redis 与内存双实现）。
+DeleteSessionsByUser/PurgeSessionsByUser`, and `AuditStore.Append/List`.
 
-**即时记录**：消息到达时（`HistoryHandler`）立即调用 `SaveUserInfo` 和 `SaveSessionInfo`
-写入最小基本信息到 Redis，保证管理后台可立即检索到用户与会话，无需等待 LLM 提取/总结定时窗口。
-后续消费者定时执行萃取时，会用完整画像/总结覆盖基本信息。
+**Immediate records**: when a message arrives (`HistoryHandler`), `SaveUserInfo` and
+`SaveSessionInfo` immediately write a minimal record to Redis so the console can list users and
+sessions without waiting for the LLM extraction/summary windows. Later extraction runs overwrite
+those minimal records with the full profile/summary.
 
-软删除通过热存储 Hash 的 `_deleted` 标记实现，读取时自动跳过；冷存储 ClickHouse 仍保留原始快照（由 TTL/归档策略处理）。
+Soft deletion is implemented with an `_deleted` marker in the hot Hash and is skipped on read;
+ClickHouse keeps the original snapshot (handled by TTL / archival policy).
 
 ---
 
-## 9. Redis Cluster / Dragonfly 兼容性
+## 8. Data retention
 
-### 9.1 兼容性结论
-**完全兼容**，需开启 `cache.use_zset_index: true` 并使用 `redis.UniversalClient` 接口。
+| Table | TTL | Notes |
+|-------|-----|-------|
+| `history_message` | 730 days | `TTL created_at + INTERVAL 730 DAY`, partitioned daily |
+| `agent_traces` | 7 days | High volume, short-lived |
+| `entity_memory` | none | Durable profiles, deduplicated by `_version` |
+| `session_summary` | none | Durable summaries |
+| `audit_log` | 90 days | Governance trail |
+| `session_stats_hourly`, `user_profile_stats_hourly` | 730 days | Pre-aggregation targets |
 
-### 9.2 Key 设计兼容性
-所有 Key 以租户为前缀（`mneme:memory:{tenant}:...`、`mneme:session:{tenant}:...` 等），**同租户所有 Key 天然落在同一哈希槽**，保证：
-- 单键操作（`HSet`/`HGetAll`/`Incr`/`Expire`/`Del`/`ZAdd`/`ZRevRangeByScore`）完全兼容
-- 多键 Pipeline / 事务（同租户 Key）安全执行
-- **SCAN 受限**：Cluster 模式仅扫描本节点，**必须开启 ZSET 索引** 避免全量扫描
+`archiver` can export Parquet snapshots to object storage before TTL expiry.
 
-### 9.3 部署建议
-```yaml
-# configs/config.yaml
-redis:
-  addr: "node1:6379,node2:6379,node3:6379"  # Cluster 地址
-  cluster_mode: true
-cache:
-  use_zset_index: true   # 必须开启，避免 SCAN
-  session_ttl: 720h
-  profile_ttl: 720h
-```
+> `CREATE TABLE IF NOT EXISTS` does not alter existing tables. Schema changes such as new TTLs or
+> codecs require explicit `ALTER TABLE` migrations on deployments that already have data.
 
-### 9.4 Dragonfly 兼容
-Dragonfly 原生兼容 Redis Cluster 协议，**零代码变更**即可替换 Redis Cluster，多线程架构提供更高吞吐。
+---
+
+## 9. Redis compatibility (standalone / Dragonfly / Cluster)
+
+### 9.1 Current state
+
+`pkg/cache.NewRedisClient` builds a **single-node** client (`redis.NewClient`) from a comma
+separated `addr`. This works with:
+
+- a standalone Redis server,
+- a Redis-compatible server such as **Dragonfly** (drop-in replacement, higher throughput).
+
+### 9.2 Redis Cluster: not supported yet
+
+Cluster mode requires three changes, tracked in the roadmap:
+
+1. **Client type** — switch to `redis.NewUniversalClient` so cluster addresses are handled.
+2. **Hash tags** — keys are tenant-prefixed (`mneme:memory:{tenant}:{type}:{id}`,
+   `mneme:session:{tenant}:{session}`) but not hash-tagged with braces, so keys of the same tenant
+   do **not** share a slot. Multi-key pipelines/transactions would fail with `CROSSSLOT`; wrap the
+   tenant in braces (`{tenant}`) to fix this.
+3. **Index rebuild** — `POST /admin/api/index/rebuild` currently iterates a single node; in cluster
+   mode it must fan out over all masters.
+
+Until then, run a standalone Redis (or Dragonfly). Enabling `cache.use_zset_index: true` is still
+recommended because it replaces `SCAN`-based listing with `ZREVRANGEBYSCORE` cursor pagination.
+
+### 9.3 Key layout
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `mneme:memory:{tenant}:{entity_type}:{entity_id}` | Hash | Entity profile |
+| `mneme:memver:{tenant}:{entity_type}:{entity_id}` | String | Profile version |
+| `mneme:session:{tenant}:{session_id}` | Hash | Session summary |
+| `mneme:sessver:{tenant}:{session_id}` | String | Summary version |
+| `mneme:users:{tenant}` | ZSET | User time index |
+| `mneme:sessions:{tenant}` | ZSET | Session time index |
+| `mneme:bloom:{pipeline}:{tenant}` | Bloom | Deduplication |
+| `mneme:audit:{tenant}` | List | Audit entries (ClickHouse is authoritative) |

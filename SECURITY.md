@@ -1,63 +1,75 @@
-# 安全策略（Security Policy）
+# Security Policy
 
-## 支持版本
+## Supported versions
 
-| 版本 | 状态 |
-|------|------|
-| `main` 分支 | ✅ 接收安全修复 |
-| 已发布 Tag | ✅ 接收安全修复 |
+| Version | Status |
+|---------|--------|
+| `main` branch | ✅ Security fixes accepted |
+| Tagged releases | ✅ Security fixes accepted |
 
-项目尚未发布正式版本，安全修复统一合入 `main` 并在 CHANGELOG 中记录。
+The project has no formal release yet; security fixes land on `main` and are recorded in the
+[CHANGELOG](CHANGELOG.md).
 
-## 报告漏洞
+## Reporting a vulnerability
 
-**请勿通过公开 Issue / Discussion 报告安全漏洞。**
+**Please do not report security vulnerabilities through public issues or discussions.**
 
-请通过以下渠道私下报告：
+Report privately through one of these channels:
 
-- GitHub 仓库的 **Security → Report a vulnerability**（私密安全通告）
-- 或邮件联系维护者（见仓库首页维护者信息）
+- GitHub **Security → Report a vulnerability** (private security advisory), or
+- direct contact with a maintainer (see the repository front page).
 
-报告请包含：
+Please include:
 
-| 项目 | 说明 |
-|------|------|
-| 漏洞类型 | 越权 / 注入 / 认证绕过 / 敏感信息泄露 / 拒绝服务等 |
-| 影响组件 | 例如 `internal/api`、`pkg/cache` |
-| 复现步骤 | 完整请求或最小复现代码 |
-| 影响面 | 受影响版本、配置前提 |
-| 严重级别 | 你的评估（高 / 中 / 低） |
+| Item | Description |
+|------|-------------|
+| Vulnerability class | Authorization bypass, injection, auth bypass, data leak, DoS, ... |
+| Affected component | e.g. `internal/api`, `pkg/cache` |
+| Reproduction | Full request or minimal proof-of-concept |
+| Impact | Affected versions and required configuration |
+| Severity | Your assessment (critical / high / medium / low) |
 
-## 响应时效
+## Response timeline
 
-| 阶段 | 时限 |
-|------|------|
-| 确认收到 | 72 小时内 |
-| 初步评估与修复计划 | 7 天内 |
-| 修复发布 | 视严重级别，重大漏洞 14 天内 |
+| Stage | Target |
+|-------|--------|
+| Acknowledge receipt | within 72 hours |
+| Triage and remediation plan | within 7 days |
+| Fix released | 14 days for critical issues |
 
-我们会在修复发布后公开致谢（如你愿意），并可协调披露时间。
+We will credit you in the release notes if you wish, and can coordinate disclosure timing.
 
-## 部署方安全须知
+## Security notes for operators
 
-Mneme 定位为**内部记忆基础设施**，默认配置面向本地开发，生产部署前请务必加固：
+Mneme is **internal memory infrastructure**. The defaults target local development; harden them
+before production use.
 
-1. **管理后台鉴权**
-   - 务必设置 `admin.token`（非空），请求需带 `Authorization: Bearer <token>`。
-   - `token` 为空时管理接口**完全无鉴权**，任何人都可删除数据。
-   - `/admin` 页面默认开启，生产建议置于内网或网关鉴权之后。
+1. **Admin console authentication**
+   - Always set a non-empty `admin.token`; requests must then carry
+     `Authorization: Bearer <token>`.
+   - When `token` is empty, admin endpoints have **no authentication at all** and anyone can delete
+     data.
+   - `/admin` is enabled by default in the sample config — keep it on an internal network or behind
+     gateway authentication.
 
-2. **业务接口鉴权**
-   - `/api/v1/*` **默认不做认证**，仅通过 `X-Tenant-ID` 头标识租户。
-   - 必须由网关 / 反向代理统一承担认证、授权与限流，禁止直接暴露到公网。
+2. **Data plane authentication**
+   - `/api/v1/*` performs **no authentication**; tenants are only identified by the `X-Tenant-ID`
+     header.
+   - Put authentication, authorization, and rate limiting in a gateway or reverse proxy. Never
+     expose the service directly to the public internet.
 
-3. **传输与存储**
-   - ClickHouse、Redis、Pulsar 均按无 TLS 的明文默认配置启动；跨主机部署请启用 TLS 并使用最小权限账号。
-   - 配置文件中的 `token` / `password` / `access_key` / `secret_key` 请通过环境变量或密钥管理系统注入，**不要提交到仓库**。
+3. **Transport and storage**
+   - ClickHouse, Redis, and Pulsar all start without TLS in the sample compose file. Enable TLS and
+     use least-privilege accounts for cross-host deployments.
+   - Inject `token`, `password`, `access_key`, and `secret_key` through environment variables or a
+     secret manager. **Never commit them.**
 
-4. **数据保护**
-   - Mneme 存储用户对话原文与画像，属敏感数据。请配置合理的 `cache.*_ttl` 与 ClickHouse TTL，落实保留期与删除义务。
-   - 硬删除（`?hard=true`）不可恢复，操作前请确认审计与备份策略。
+4. **Data protection**
+   - Mneme stores raw conversation content and derived profiles, which is sensitive data. Set
+     appropriate `cache.*_ttl` values and ClickHouse TTLs to honour retention and deletion
+     obligations.
+   - Hard deletes (`?hard=true`) are irreversible — confirm your audit and backup strategy first.
 
-5. **默认配置风险**
-   - Redis 未设置密码、ClickHouse 使用 `default` 用户空密码，仅适用于本地开发环境。
+5. **Default configuration caveats**
+   - Redis runs without a password and ClickHouse uses an empty-password `default` user. Both are
+     development-only settings.

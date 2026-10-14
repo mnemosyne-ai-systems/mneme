@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 使用问题 / 功能讨论
+  - name: Questions and ideas
     url: https://github.com/mnemosyne-labs/mneme/discussions
-    about: 提问、想法、性能调优与架构讨论请到这里
-  - name: 安全漏洞报告
+    about: Ask questions or discuss performance tuning and architecture here
+  - name: Report a security vulnerability
     url: https://github.com/mnemosyne-labs/mneme/security/advisories/new
-    about: 请勿公开提交安全漏洞，参见 SECURITY.md
+    about: Please do not file public issues for security bugs — see SECURITY.md
