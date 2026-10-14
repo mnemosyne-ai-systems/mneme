@@ -1,4 +1,4 @@
-module github.com/mnemosyne/mneme
+module github.com/mnemosyne-labs/mneme
 
 go 1.25.0
 

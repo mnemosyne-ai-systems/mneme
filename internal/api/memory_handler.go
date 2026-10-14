@@ -7,9 +7,9 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/mnemosyne/mneme/internal/service"
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/internal/service"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // ProfileReader 用于读取实体画像（由 memory 服务实现）。

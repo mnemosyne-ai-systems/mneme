@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne/mneme/pkg/models"
-	"github.com/mnemosyne/mneme/pkg/storage"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/storage"
 )
 
 // AuditAction 管理操作审计动作类型。
@@ -65,7 +65,7 @@ func (s *ClickHouseAuditStore) List(ctx context.Context, tenant string, limit in
 
 // MemoryAuditStore 内存实现，用于测试与无 ClickHouse 场景。
 type MemoryAuditStore struct {
-	mu     sync.RWMutex
+	mu      sync.RWMutex
 	entries map[string][]models.AuditEntry
 }
 

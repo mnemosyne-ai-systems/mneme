@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/metrics"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/metrics"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // MemoryExtractor 把一批记忆事件萃取为结构化画像。

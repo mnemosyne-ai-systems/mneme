@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 func TestSchemaStatements(t *testing.T) {

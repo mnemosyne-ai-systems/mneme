@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mnemosyne/mneme/internal/service"
-	"github.com/mnemosyne/mneme/pkg/messagebus"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/internal/service"
+	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 func writeFile(t *testing.T, dir, name, content string) string {

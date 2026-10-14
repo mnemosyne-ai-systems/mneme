@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/mnemosyne/mneme/pkg/messagebus"
-	"github.com/mnemosyne/mneme/pkg/metrics"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
+	"github.com/mnemosyne-labs/mneme/pkg/metrics"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // Topics 三条管道的 Topic 配置。

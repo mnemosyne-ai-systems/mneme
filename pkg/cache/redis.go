@@ -125,11 +125,11 @@ func SessionsIndexKey(tenant string) string {
 
 // L2Cache 本地二级缓存（内存级，带 TTL 和 LRU 淘汰）。
 type L2Cache struct {
-	mu       sync.RWMutex
-	data     map[string]*l2Entry
-	maxSize  int
-	ttl      time.Duration
-	onEvict  func(key string, value interface{})
+	mu      sync.RWMutex
+	data    map[string]*l2Entry
+	maxSize int
+	ttl     time.Duration
+	onEvict func(key string, value interface{})
 }
 
 type l2Entry struct {

@@ -3,7 +3,7 @@
 Mneme 是一个面向 Agent 的**长期记忆服务**：把对话历史、Agent 轨迹、显式记忆事件汇聚成
 **用户画像（跨会话稳定属性）** 与 **会话总结（单次对话内容）**，并提供统一查询接口。
 
-模块路径：`github.com/mnemosyne/mneme`（Go 1.25，单仓库单模块）。
+模块路径：`github.com/mnemosyne-labs/mneme`（Go 1.25，单仓库单模块）。
 
 ---
 

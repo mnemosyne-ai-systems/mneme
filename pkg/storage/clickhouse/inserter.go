@@ -9,10 +9,10 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/metrics"
-	"github.com/mnemosyne/mneme/pkg/models"
-	"github.com/mnemosyne/mneme/pkg/storage"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/metrics"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/storage"
 )
 
 // ErrInserterClosed 表示写入器已关闭。
@@ -44,7 +44,7 @@ const (
 type RejectStrategy int
 
 const (
-	RejectStrategyBlock RejectStrategy = iota // 阻塞等待
+	RejectStrategyBlock  RejectStrategy = iota // 阻塞等待
 	RejectStrategyDrop                         // 直接丢弃
 	RejectStrategyReject                       // 返回错误
 )
@@ -54,11 +54,11 @@ const (
 // 写入失败采用指数退避重试（1s,2s,4s,8s,16s）。
 // 支持自适应批次大小、背压控制、最大字节数限制。
 type BatchInserter struct {
-	conn      driver.Conn
-	batchSize int
-	maxBatchBytes int           // 批次最大字节数，防 OOM
-	interval  time.Duration
-	retries   int
+	conn          driver.Conn
+	batchSize     int
+	maxBatchBytes int // 批次最大字节数，防 OOM
+	interval      time.Duration
+	retries       int
 
 	// 自适应批次控制
 	adaptiveBatchEnabled bool
@@ -80,16 +80,16 @@ type BatchInserter struct {
 	summaries []*models.SessionSummary
 	auditLogs []*models.AuditEntry
 
-	closed    bool
-	stopCh    chan struct{}
-	stopped   chan struct{}
-	flushCh   chan struct{} // 手动触发刷新信号
+	closed  bool
+	stopCh  chan struct{}
+	stopped chan struct{}
+	flushCh chan struct{} // 手动触发刷新信号
 
 	// 统计
-	totalRowsWritten   int64
-	totalFlushCount    int64
-	totalFlushLatency  time.Duration
-	lastAdaptTime      time.Time
+	totalRowsWritten  int64
+	totalFlushCount   int64
+	totalFlushLatency time.Duration
+	lastAdaptTime     time.Time
 }
 
 // NewBatchInserter 创建批量写入器，并启动后台定时刷新协程与自适应批次调整协程。
@@ -356,6 +356,7 @@ func (b *BatchInserter) Flush() error {
 
 	return errors.Join(errs...)
 }
+
 // requeueHistory 把写失败的数据放回缓冲区（已关闭则丢弃并告警）。
 func (b *BatchInserter) requeueHistory(rows []*models.HistoryMessage) {
 	b.mu.Lock()

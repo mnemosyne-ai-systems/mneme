@@ -7,8 +7,8 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // SessionSummaryReader 用于读取会话总结。

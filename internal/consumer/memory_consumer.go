@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne/mneme/internal/service"
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/messagebus"
-	"github.com/mnemosyne/mneme/pkg/metrics"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/internal/service"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
+	"github.com/mnemosyne-labs/mneme/pkg/metrics"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // MemoryConsumerOptions 管道三消费者配置。

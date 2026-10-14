@@ -13,9 +13,9 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/mnemosyne/mneme/internal/service"
-	"github.com/mnemosyne/mneme/pkg/messagebus"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/internal/service"
+	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 type stubReader struct {
@@ -431,10 +431,10 @@ func TestGetSessionSummary(t *testing.T) {
 }
 
 type stubUserStore struct {
-	profile  map[string]string
+	profile    map[string]string
 	profileErr error
-	sessions []*models.SessionSummary
-	sessErr  error
+	sessions   []*models.SessionSummary
+	sessErr    error
 }
 
 func (s stubUserStore) GetProfile(_ context.Context, _, _, _ string) (map[string]string, error) {

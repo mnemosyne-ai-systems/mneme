@@ -4,21 +4,21 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // 业务错误码。
 const (
-	CodeOK           = 0
-	CodeBadRequest   = 40000
-	CodeMissingField = 40001
-	CodeInvalidJSON  = 40002
+	CodeOK            = 0
+	CodeBadRequest    = 40000
+	CodeMissingField  = 40001
+	CodeInvalidJSON   = 40002
 	CodeMissingTenant = 40003
 	CodeUnauthorized  = 40100
-	CodeNotFound     = 40400
-	CodeInternal     = 50000
-	CodeUpstream     = 50200
+	CodeNotFound      = 40400
+	CodeInternal      = 50000
+	CodeUpstream      = 50200
 )
 
 // writeJSON 输出统一格式的 JSON 响应。

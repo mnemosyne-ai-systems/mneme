@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // MockInserter 是 BatchInserter 的内存实现，用于单元测试。
@@ -18,7 +18,7 @@ type MockInserter struct {
 	// Err 非空时所有写入返回该错误。
 	Err error
 
-	Summaries  []*models.SessionSummary
+	Summaries []*models.SessionSummary
 	AuditLogs []*models.AuditEntry
 }
 

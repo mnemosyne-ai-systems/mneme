@@ -7,10 +7,10 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/metrics"
-	"github.com/mnemosyne/mneme/pkg/models"
-	"github.com/mnemosyne/mneme/pkg/tracing"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/metrics"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/tracing"
 )
 
 // HeaderTenantID 租户标识请求头。

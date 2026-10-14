@@ -105,7 +105,7 @@ spec:
 
     # 消费者健康
     - alert: MnemeConsumerLagHigh
-      expr: mneme_consumer_lag_seconds > 300
+      expr: mnemosyne_mneme_consumer_lag > 300
       for: 5m
       labels:
         severity: warning
@@ -137,12 +137,9 @@ spec:
 
     # 数据质量
     - alert: MnemeQualityCheckFailed
-      expr: increase(mneme_quality_check_failed_total[5m]) > 0
+      expr: sum(increase(mnemosyne_mneme_quality_check_total{passed="false"}[5m])) by (check) > 0
       for: 1m
       labels:
         severity: warning
       annotations:
-        summary: "数据质量巡检发现失败项"
-      annotations:
         summary: "数据质量巡检失败: {{ $labels.check }}"
-        severity: warning

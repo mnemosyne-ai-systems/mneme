@@ -11,17 +11,17 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/mnemosyne/mneme/internal/api"
-	"github.com/mnemosyne/mneme/internal/archiver"
-	"github.com/mnemosyne/mneme/internal/config"
-	"github.com/mnemosyne/mneme/internal/consumer"
-	"github.com/mnemosyne/mneme/internal/filewatcher"
-	"github.com/mnemosyne/mneme/internal/service"
-	"github.com/mnemosyne/mneme/pkg/cache"
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/messagebus"
-	chstore "github.com/mnemosyne/mneme/pkg/storage/clickhouse"
-	"github.com/mnemosyne/mneme/pkg/tracing"
+	"github.com/mnemosyne-labs/mneme/internal/api"
+	"github.com/mnemosyne-labs/mneme/internal/archiver"
+	"github.com/mnemosyne-labs/mneme/internal/config"
+	"github.com/mnemosyne-labs/mneme/internal/consumer"
+	"github.com/mnemosyne-labs/mneme/internal/filewatcher"
+	"github.com/mnemosyne-labs/mneme/internal/service"
+	"github.com/mnemosyne-labs/mneme/pkg/cache"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
+	chstore "github.com/mnemosyne-labs/mneme/pkg/storage/clickhouse"
+	"github.com/mnemosyne-labs/mneme/pkg/tracing"
 )
 
 // App 持有 Mneme 运行期的全部组件。
@@ -105,14 +105,14 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 
 	// Pulsar producer
 	busCfg := messagebus.Config{
-		URL:               cfg.Pulsar.URL,
-		Tenant:            cfg.Pulsar.Tenant,
-		Namespace:         cfg.Pulsar.Namespace,
-		Token:             cfg.Pulsar.Token,
-		OperationTimeout:  cfg.Pulsar.OperationTimeout,
-		ConnectionTimeout: cfg.Pulsar.ConnectionTimeout,
-		SubscriptionName:  cfg.Pulsar.SubscriptionName,
-		MaxRedeliver:      10,
+		URL:                 cfg.Pulsar.URL,
+		Tenant:              cfg.Pulsar.Tenant,
+		Namespace:           cfg.Pulsar.Namespace,
+		Token:               cfg.Pulsar.Token,
+		OperationTimeout:    cfg.Pulsar.OperationTimeout,
+		ConnectionTimeout:   cfg.Pulsar.ConnectionTimeout,
+		SubscriptionName:    cfg.Pulsar.SubscriptionName,
+		MaxRedeliver:        10,
 		NackRedeliveryDelay: time.Second,
 	}
 	producer, err := messagebus.NewProducer(busCfg)
@@ -186,9 +186,9 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			return nil, err
 		}
 		app.profileConsumer = consumer.NewHistoryProfileConsumer(c, extractor, profileStore, consumer.HistoryProfileConsumerOptions{
-			Topic:               topics.History,
-			ExtractInterval:     cfg.Consumer.HistoryProfileInterval,
-			MaxMessagesPerUser:  cfg.Consumer.HistoryProfileMaxMessages,
+			Topic:              topics.History,
+			ExtractInterval:    cfg.Consumer.HistoryProfileInterval,
+			MaxMessagesPerUser: cfg.Consumer.HistoryProfileMaxMessages,
 		})
 	}
 

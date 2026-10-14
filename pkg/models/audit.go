@@ -4,7 +4,7 @@ import "time"
 
 // AuditEntry 审计日志条目。
 type AuditEntry struct {
-	ID      uint64    `json:"id"`
+	ID       uint64    `json:"id"`
 	TenantID string    `json:"tenant_id"`
 	Actor    string    `json:"actor"`
 	Action   string    `json:"action"`

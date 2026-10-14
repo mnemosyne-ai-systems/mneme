@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mnemosyne/mneme/internal/service"
-	"github.com/mnemosyne/mneme/pkg/cache"
-	"github.com/mnemosyne/mneme/pkg/messagebus"
-	"github.com/mnemosyne/mneme/pkg/models"
-	"github.com/mnemosyne/mneme/pkg/storage"
+	"github.com/mnemosyne-labs/mneme/internal/service"
+	"github.com/mnemosyne-labs/mneme/pkg/cache"
+	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/storage"
 )
 
 func mustJSON(t *testing.T, v interface{}) []byte {

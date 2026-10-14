@@ -27,7 +27,7 @@ var openAPISpec = map[string]interface{}{
 		},
 		"schemas": map[string]interface{}{
 			"HistoryMessage": map[string]interface{}{
-				"type": "object",
+				"type":     "object",
 				"required": []string{"session_id", "role", "content"},
 				"properties": map[string]interface{}{
 					"session_id": map[string]interface{}{"type": "string", "example": "sess-demo-001"},
@@ -45,13 +45,13 @@ var openAPISpec = map[string]interface{}{
 				},
 			},
 			"MemoryEvent": map[string]interface{}{
-				"type": "object",
+				"type":     "object",
 				"required": []string{"entity_id", "entity_type", "event_type"},
 				"properties": map[string]interface{}{
 					"entity_id":   map[string]interface{}{"type": "string"},
 					"entity_type": map[string]interface{}{"type": "string"},
 					"event_type":  map[string]interface{}{"type": "string"},
-					"payload":      map[string]interface{}{"type": "object"},
+					"payload":     map[string]interface{}{"type": "object"},
 				},
 			},
 		},
@@ -167,15 +167,15 @@ var openAPISpec = map[string]interface{}{
 		"/admin/api/users": map[string]interface{}{
 			"get": map[string]interface{}{
 				"summary": "[后台] 列出用户与画像（需 admin.token，若已配置）",
-			"parameters": []map[string]interface{}{
-				{"name": "limit", "in": "query", "required": false, "schema": map[string]interface{}{"type": "integer"}},
-				{"name": "cursor", "in": "query", "required": false, "schema": map[string]interface{}{"type": "string", "description": "分页游标（上一页返回的 next_cursor）"}},
-			},
-			"responses": map[string]interface{}{"200": map[string]interface{}{"description": "users（含 next_cursor 分页游标）"}},
+				"parameters": []map[string]interface{}{
+					{"name": "limit", "in": "query", "required": false, "schema": map[string]interface{}{"type": "integer"}},
+					{"name": "cursor", "in": "query", "required": false, "schema": map[string]interface{}{"type": "string", "description": "分页游标（上一页返回的 next_cursor）"}},
+				},
+				"responses": map[string]interface{}{"200": map[string]interface{}{"description": "users（含 next_cursor 分页游标）"}},
 			},
 		},
 		"/admin/api/users/{user_id}": map[string]interface{}{
-			"get": map[string]interface{}{"summary": "[后台] 查看用户画像 + 会话列表", "parameters": []map[string]interface{}{{"name": "user_id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "example": "u1"}}}, "responses": map[string]interface{}{"200": map[string]interface{}{"description": "user"}, "404": map[string]interface{}{"description": "not found"}}},
+			"get":    map[string]interface{}{"summary": "[后台] 查看用户画像 + 会话列表", "parameters": []map[string]interface{}{{"name": "user_id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "example": "u1"}}}, "responses": map[string]interface{}{"200": map[string]interface{}{"description": "user"}, "404": map[string]interface{}{"description": "not found"}}},
 			"delete": map[string]interface{}{"summary": "[后台] 删除用户画像及其全部会话", "parameters": []map[string]interface{}{{"name": "user_id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "example": "u1"}}}, "responses": map[string]interface{}{"200": map[string]interface{}{"description": "deleted"}}},
 		},
 		"/admin/api/users/{user_id}/export": map[string]interface{}{
@@ -194,7 +194,7 @@ var openAPISpec = map[string]interface{}{
 			},
 		},
 		"/admin/api/sessions/{session_id}": map[string]interface{}{
-			"get": map[string]interface{}{"summary": "[后台] 查看单个会话总结", "parameters": []map[string]interface{}{{"name": "session_id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "example": "sess-demo-001"}}}, "responses": map[string]interface{}{"200": map[string]interface{}{"description": "session"}, "404": map[string]interface{}{"description": "not found"}}},
+			"get":    map[string]interface{}{"summary": "[后台] 查看单个会话总结", "parameters": []map[string]interface{}{{"name": "session_id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "example": "sess-demo-001"}}}, "responses": map[string]interface{}{"200": map[string]interface{}{"description": "session"}, "404": map[string]interface{}{"description": "not found"}}},
 			"delete": map[string]interface{}{"summary": "[后台] 删除单个会话总结", "parameters": []map[string]interface{}{{"name": "session_id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "example": "sess-demo-001"}}}, "responses": map[string]interface{}{"200": map[string]interface{}{"description": "deleted"}}},
 		},
 		"/admin/api/sessions/{session_id}/export": map[string]interface{}{

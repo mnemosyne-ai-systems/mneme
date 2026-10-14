@@ -11,9 +11,9 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/mnemosyne/mneme/pkg/cache"
-	"github.com/mnemosyne/mneme/pkg/models"
-	"github.com/mnemosyne/mneme/pkg/storage"
+	"github.com/mnemosyne-labs/mneme/pkg/cache"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/storage"
 )
 
 // SessionSummaryStore 负责会话总结的热存储（Redis）与冷存储（ClickHouse）。

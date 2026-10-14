@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // MemoryBus 是一个进程内消息总线，用于单元测试与本地开发。

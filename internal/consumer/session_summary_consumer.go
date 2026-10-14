@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne/mneme/internal/service"
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/messagebus"
-	"github.com/mnemosyne/mneme/pkg/metrics"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/internal/service"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
+	"github.com/mnemosyne-labs/mneme/pkg/metrics"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // SessionSummaryConsumerOptions 会话总结消费者配置。
@@ -39,9 +39,9 @@ func (o SessionSummaryConsumerOptions) withDefaults() SessionSummaryConsumerOpti
 
 // sessionKey 用于按 (tenant, session) 聚合缓冲。
 type sessionKey struct {
-	Tenant   string
-	Session  string
-	UserID   string
+	Tenant  string
+	Session string
+	UserID  string
 }
 
 // sessionBuffer 会话缓冲，保留原始消息与起止时间，用于总结。
@@ -54,10 +54,10 @@ type sessionBuffer struct {
 // SessionSummaryConsumer 消费对话历史，按 session_id 缓冲并在定时窗口生成会话总结，
 // 与用户画像（HistoryProfileConsumer）互补：前者描述"这次对话聊了什么"，后者描述"这个用户是谁"。
 type SessionSummaryConsumer struct {
-	consumer  messagebus.Consumer
+	consumer   messagebus.Consumer
 	summarizer service.SessionSummarizer
-	store     service.SessionSummaryStore
-	opts      SessionSummaryConsumerOptions
+	store      service.SessionSummaryStore
+	opts       SessionSummaryConsumerOptions
 
 	mu     sync.Mutex
 	buffer map[sessionKey]*sessionBuffer
@@ -74,13 +74,13 @@ type SessionSummaryConsumer struct {
 func NewSessionSummaryConsumer(c messagebus.Consumer, summarizer service.SessionSummarizer, store service.SessionSummaryStore, opts SessionSummaryConsumerOptions) *SessionSummaryConsumer {
 	opts = opts.withDefaults()
 	return &SessionSummaryConsumer{
-		consumer:  c,
+		consumer:   c,
 		summarizer: summarizer,
-		store:     store,
-		opts:      opts,
-		buffer:    make(map[sessionKey]*sessionBuffer),
-		stopCh:    make(chan struct{}),
-		stopped:   make(chan struct{}),
+		store:      store,
+		opts:       opts,
+		buffer:     make(map[sessionKey]*sessionBuffer),
+		stopCh:     make(chan struct{}),
+		stopped:    make(chan struct{}),
 	}
 }
 

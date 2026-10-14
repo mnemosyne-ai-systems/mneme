@@ -60,18 +60,18 @@ type PulsarConfig struct {
 
 // ClickHouseConfig ClickHouse 连接与批量写入配置。
 type ClickHouseConfig struct {
-	Hosts             []string      `mapstructure:"hosts"`
-	Database          string        `mapstructure:"database"`
-	Username          string        `mapstructure:"username"`
-	Password          string        `mapstructure:"password"`
-	MaxOpenConns      int           `mapstructure:"max_open_conns"`
-	MaxIdleConns      int           `mapstructure:"max_idle_conns"`
-	DialTimeout       time.Duration `mapstructure:"dial_timeout"`
-	BatchSize         int           `mapstructure:"batch_size"`
-	MaxBatchBytes     int           `mapstructure:"max_batch_bytes"`
-	FlushInterval     time.Duration `mapstructure:"flush_interval"`
-	MaxRetries        int           `mapstructure:"max_retries"`
-	AutoMigrate       bool          `mapstructure:"auto_migrate"`
+	Hosts         []string      `mapstructure:"hosts"`
+	Database      string        `mapstructure:"database"`
+	Username      string        `mapstructure:"username"`
+	Password      string        `mapstructure:"password"`
+	MaxOpenConns  int           `mapstructure:"max_open_conns"`
+	MaxIdleConns  int           `mapstructure:"max_idle_conns"`
+	DialTimeout   time.Duration `mapstructure:"dial_timeout"`
+	BatchSize     int           `mapstructure:"batch_size"`
+	MaxBatchBytes int           `mapstructure:"max_batch_bytes"`
+	FlushInterval time.Duration `mapstructure:"flush_interval"`
+	MaxRetries    int           `mapstructure:"max_retries"`
+	AutoMigrate   bool          `mapstructure:"auto_migrate"`
 
 	// 自适应批次控制
 	AdaptiveBatchEnabled bool          `mapstructure:"adaptive_batch_enabled"`
@@ -96,8 +96,8 @@ type RedisConfig struct {
 
 // CacheConfig 热存储 TTL 配置（0 = 永不过期）。
 type CacheConfig struct {
-	SessionTTL  time.Duration `mapstructure:"session_ttl"`
-	ProfileTTL  time.Duration `mapstructure:"profile_ttl"`
+	SessionTTL time.Duration `mapstructure:"session_ttl"`
+	ProfileTTL time.Duration `mapstructure:"profile_ttl"`
 	// UseZSetIndex 是否启用 ZSET 索引替代 SCAN（实验性，默认关闭）。
 	UseZSetIndex bool `mapstructure:"use_zset_index"`
 }
@@ -196,11 +196,11 @@ type OSSConfig struct {
 
 // ArchiverConfig 冷热分离归档配置。
 type ArchiverConfig struct {
-	Enabled      bool      `mapstructure:"enabled"`
-	CronHour     int       `mapstructure:"cron_hour"`
-	RetainMonths int       `mapstructure:"retain_months"`
-	Tables       []string  `mapstructure:"tables"`
-	ExportDir    string    `mapstructure:"export_dir"`
+	Enabled      bool     `mapstructure:"enabled"`
+	CronHour     int      `mapstructure:"cron_hour"`
+	RetainMonths int      `mapstructure:"retain_months"`
+	Tables       []string `mapstructure:"tables"`
+	ExportDir    string   `mapstructure:"export_dir"`
 	// HTTPAddr 是 ClickHouse 的 HTTP 接口地址（如 http://clickhouse:8123），
 	// 用于客户端侧 Parquet 导出；为空时从 clickhouse.hosts 推导（端口换成 8123）。
 	HTTPAddr string    `mapstructure:"http_addr"`

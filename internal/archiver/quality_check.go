@@ -9,7 +9,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
-	"github.com/mnemosyne/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
 )
 
 // QualityChecker 数据质量巡检器。
@@ -24,13 +24,13 @@ type QualityChecker struct {
 
 // QualityCheckResult 单项质量检查结果。
 type QualityCheckResult struct {
-	Name       string
-	Passed     bool
-	Value      float64
-	Threshold  float64
-	Message    string
-	Severity   string // "info" | "warning" | "critical"
-	Timestamp  time.Time
+	Name      string
+	Passed    bool
+	Value     float64
+	Threshold float64
+	Message   string
+	Severity  string // "info" | "warning" | "critical"
+	Timestamp time.Time
 }
 
 // NewQualityChecker 创建质量巡检器。
@@ -156,13 +156,13 @@ func (qc *QualityChecker) checkProfileCompleteness(ctx context.Context) ([]Quali
 	passed := completeness >= 0.8
 	return []QualityCheckResult{
 		{
-			Name:       "profile_completeness",
-			Passed:     passed,
-			Value:      completeness,
-			Threshold:  0.8,
-			Message:    fmt.Sprintf("画像完整度 %.1f%% (%d/%d)", completeness*100, withContent, total),
-			Severity:   severity(passed, false),
-			Timestamp:  time.Now(),
+			Name:      "profile_completeness",
+			Passed:    passed,
+			Value:     completeness,
+			Threshold: 0.8,
+			Message:   fmt.Sprintf("画像完整度 %.1f%% (%d/%d)", completeness*100, withContent, total),
+			Severity:  severity(passed, false),
+			Timestamp: time.Now(),
 		},
 	}, nil
 }
@@ -204,13 +204,13 @@ func (qc *QualityChecker) checkSessionSummaryQuality(ctx context.Context) ([]Qua
 	passed := coverage >= 0.9
 	return []QualityCheckResult{
 		{
-			Name:       "session_summary_coverage",
-			Passed:     passed,
-			Value:      coverage,
-			Threshold:  0.9,
-			Message:    fmt.Sprintf("会话总结覆盖率 %.1f%% (%d/%d)", coverage*100, withSummary, total),
-			Severity:   severity(passed, false),
-			Timestamp:  time.Now(),
+			Name:      "session_summary_coverage",
+			Passed:    passed,
+			Value:     coverage,
+			Threshold: 0.9,
+			Message:   fmt.Sprintf("会话总结覆盖率 %.1f%% (%d/%d)", coverage*100, withSummary, total),
+			Severity:  severity(passed, false),
+			Timestamp: time.Now(),
 		},
 	}, nil
 }
@@ -245,15 +245,15 @@ func (qc *QualityChecker) checkHistoryMessageIntegrity(ctx context.Context) ([]Q
 	passed := total == 0 || (validRole == total && hasContent == total)
 	return []QualityCheckResult{
 		{
-			Name:       "history_message_integrity",
-			Passed:     passed,
-			Value:      float64(validRole) / float64(max(total, 1)),
-			Threshold:  1.0,
-			Message:    fmt.Sprintf("消息完整性: role有效率 %.1f%%, 内容非空率 %.1f%%",
+			Name:      "history_message_integrity",
+			Passed:    passed,
+			Value:     float64(validRole) / float64(max(total, 1)),
+			Threshold: 1.0,
+			Message: fmt.Sprintf("消息完整性: role有效率 %.1f%%, 内容非空率 %.1f%%",
 				float64(validRole)/float64(max(total, 1))*100,
 				float64(hasContent)/float64(max(total, 1))*100),
-			Severity:   severity(passed, false),
-			Timestamp:  time.Now(),
+			Severity:  severity(passed, false),
+			Timestamp: time.Now(),
 		},
 	}, nil
 }
@@ -308,13 +308,13 @@ func (qc *QualityChecker) checkClickHousePartitionHealth(ctx context.Context) ([
 		stale := time.Since(lastMod) > 48*time.Hour
 		passed := !stale
 		results = append(results, QualityCheckResult{
-			Name:       "ch_partition_health_" + table,
-			Passed:     passed,
-			Value:      time.Since(lastMod).Hours(),
-			Threshold:  48,
-			Message:    fmt.Sprintf("表 %s: %d 个分区, %.2f GB, 最后更新 %.1f 小时前", table, parts, float64(bytes)/1e9, time.Since(lastMod).Hours()),
-			Severity:   severity(passed, true),
-			Timestamp:  time.Now(),
+			Name:      "ch_partition_health_" + table,
+			Passed:    passed,
+			Value:     time.Since(lastMod).Hours(),
+			Threshold: 48,
+			Message:   fmt.Sprintf("表 %s: %d 个分区, %.2f GB, 最后更新 %.1f 小时前", table, parts, float64(bytes)/1e9, time.Since(lastMod).Hours()),
+			Severity:  severity(passed, true),
+			Timestamp: time.Now(),
 		})
 	}
 	if err := rows.Err(); err != nil {

@@ -6,9 +6,9 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/mnemosyne/mneme/internal/service"
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/internal/service"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // UsersHandler 聚合查询接口：同一用户的画像 + 其所有会话总结。
@@ -63,10 +63,10 @@ func (h *UsersHandler) GetContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, map[string]interface{}{
-		"user_id":  userID,
+		"user_id":   userID,
 		"tenant_id": tenant,
-		"profile":  profile,
-		"sessions": sessions,
+		"profile":   profile,
+		"sessions":  sessions,
 	})
 }
 
@@ -83,8 +83,8 @@ func (h *UsersHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		UserID  string                 `json:"user_id"`
-		Profile map[string]string      `json:"profile"`
+		UserID  string            `json:"user_id"`
+		Profile map[string]string `json:"profile"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		badRequest(w, CodeInvalidJSON, "invalid json body: "+err.Error())

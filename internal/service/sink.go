@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // HistorySink 抽象会话历史消息的投递目标。

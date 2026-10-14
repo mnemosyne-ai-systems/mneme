@@ -12,9 +12,9 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/mnemosyne/mneme/pkg/cache"
-	"github.com/mnemosyne/mneme/pkg/models"
-	"github.com/mnemosyne/mneme/pkg/storage"
+	"github.com/mnemosyne-labs/mneme/pkg/cache"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/storage"
 )
 
 // decodeCursor 解析分页游标（偏移量）。
@@ -364,7 +364,7 @@ func (s *RedisProfileStore) PurgeProfile(ctx context.Context, tenant, entityType
 func (s *RedisProfileStore) RebuildUsersIndex(ctx context.Context, tenant string) (int64, error) {
 	idxKey := cache.UsersIndexKey(tenant)
 	pattern := cache.MemoryKey(tenant, models.EntityTypeUser, "*")
-	
+
 	// 先清空旧索引（幂等）
 	if err := s.client.Del(ctx, idxKey).Err(); err != nil {
 		return 0, fmt.Errorf("profile store: del index: %w", err)

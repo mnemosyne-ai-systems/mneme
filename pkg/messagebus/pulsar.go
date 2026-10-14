@@ -8,7 +8,7 @@ import (
 
 	"github.com/apache/pulsar-client-go/pulsar"
 
-	"github.com/mnemosyne/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
 )
 
 // pulsarClient 封装共享的 Pulsar 连接。

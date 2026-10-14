@@ -9,24 +9,24 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/storage"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/storage"
 )
 
 // Config ClickHouse 连接配置。
 type Config struct {
-	Hosts             []string
-	Database          string
-	Username          string
-	Password          string
-	MaxOpenConns      int
-	MaxIdleConns      int
-	DialTimeout       time.Duration
-	BatchSize         int
-	MaxBatchBytes     int           // 批次最大字节数，防 OOM
-	FlushInterval     time.Duration
-	MaxRetries        int
-	AutoMigrate       bool
+	Hosts         []string
+	Database      string
+	Username      string
+	Password      string
+	MaxOpenConns  int
+	MaxIdleConns  int
+	DialTimeout   time.Duration
+	BatchSize     int
+	MaxBatchBytes int // 批次最大字节数，防 OOM
+	FlushInterval time.Duration
+	MaxRetries    int
+	AutoMigrate   bool
 
 	// 自适应批次控制
 	AdaptiveBatchEnabled bool

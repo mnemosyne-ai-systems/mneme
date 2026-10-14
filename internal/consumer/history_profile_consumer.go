@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne/mneme/internal/service"
-	"github.com/mnemosyne/mneme/pkg/logger"
-	"github.com/mnemosyne/mneme/pkg/messagebus"
-	"github.com/mnemosyne/mneme/pkg/metrics"
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/internal/service"
+	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
+	"github.com/mnemosyne-labs/mneme/pkg/metrics"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // HistoryProfileConsumerOptions 对话历史萃取消费者配置。
@@ -122,11 +122,11 @@ func (h *HistoryProfileConsumer) handle(ctx context.Context, msg *messagebus.Mes
 	}
 
 	evt := &models.MemoryEvent{
-		EventID:   models.NewID(),
-		EntityID:  hist.UserID,
-		TenantID:  hist.TenantID,
+		EventID:    models.NewID(),
+		EntityID:   hist.UserID,
+		TenantID:   hist.TenantID,
 		EntityType: models.EntityTypeUser,
-		EventType: "message",
+		EventType:  "message",
 		Payload: map[string]interface{}{
 			"role":       hist.Role,
 			"content":    hist.Content,

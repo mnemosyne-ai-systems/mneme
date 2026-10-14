@@ -2,9 +2,9 @@ APP        := mneme
 VERSION    ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS    := -s -w -X main.version=$(VERSION)
 BIN_DIR    := bin
-IMAGE      ?= mnemosyne/mneme:latest
+IMAGE      ?= mnemosyne-labs/mneme:latest
 
-.PHONY: all build build-file-adapter run test test-cover lint fmt vet tidy clean docker docker-push deps-up deps-down
+.PHONY: all build build-file-adapter run test test-cover lint fmt vet yaml-lint tidy clean docker docker-push deps-up deps-down
 
 all: build
 
@@ -30,7 +30,11 @@ fmt:
 vet:
 	go vet ./...
 
-lint: fmt vet
+# 校验 deploy/configs/.github 下的 YAML（语法 + 重复键）
+yaml-lint:
+	go run ./tools/yamlcheck
+
+lint: fmt vet yaml-lint
 
 tidy:
 	go mod tidy

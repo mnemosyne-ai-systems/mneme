@@ -4,7 +4,7 @@ package storage
 import (
 	"context"
 
-	"github.com/mnemosyne/mneme/pkg/models"
+	"github.com/mnemosyne-labs/mneme/pkg/models"
 )
 
 // BatchInserter 是各管道共用的批量写入抽象。
