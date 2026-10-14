@@ -1,0 +1,76 @@
+name: Bug 反馈
+description: 报告可复现的问题
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先确认已在最新 `main` 上复现，并搜索是否已有同类 Issue。
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 期望发生什么，实际发生了什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 尽量提供可直接执行的请求（curl / mneme.http）或最小复现代码
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志片段
+      description: 粘贴相关日志，注意脱敏（令牌、密码、用户对话内容）
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Commit
+      placeholder: v0.1.0 或 a1b2c3d
+
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: 部署方式
+      options:
+        - docker run
+        - docker compose（deploy/docker-compose.yaml）
+        - Kubernetes
+        - 本地 go run
+    validations:
+      required: true
+
+  - type: dropdown
+    id: components
+    attributes:
+      label: 相关组件
+      multiple: true
+      options:
+        - internal/api（HTTP 接口）
+        - internal/consumer（消费与萃取）
+        - internal/service（业务存储）
+        - pkg/cache（Redis）
+        - pkg/storage（ClickHouse）
+        - pkg/messagebus（Pulsar）
+        - internal/filewatcher（文件采集）
+        - 管理后台 /admin
+        - 部署 / 运维
+        - 其他
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已在最新 main 上复现
+        - label: 我已搜索过现有 Issue，无重复
+        - label: 我已对日志与配置脱敏

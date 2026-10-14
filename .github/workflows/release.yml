@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  image:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+            ${{ secrets.DOCKERHUB_USERNAME && format('{0}/mneme', secrets.DOCKERHUB_USERNAME) || '' }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  binaries:
+    name: Release binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for os in linux darwin windows; do
+            for arch in amd64 arm64; do
+              ext=""; [ "$os" = "windows" ] && ext=".exe"
+              for app in mneme file-adapter; do
+                CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+                  -ldflags "-s -w -X main.version=${TAG}" \
+                  -o "dist/${app}_${os}_${arch}${ext}" "./cmd/${app}"
+              done
+            done
+          done
+          cd dist
+          for os in linux darwin windows; do
+            for arch in amd64 arm64; do
+              ext=""; [ "$os" = "windows" ] && ext=".exe"
+              archive="mnemosyne-mneme-${TAG}-${os}-${arch}"
+              if [ "$os" = "windows" ]; then
+                zip -j "${archive}.zip" "mneme_${os}_${arch}${ext}" "file-adapter_${os}_${arch}${ext}"
+              else
+                tar -czf "${archive}.tar.gz" "mneme_${os}_${arch}${ext}" "file-adapter_${os}_${arch}${ext}"
+              fi
+            done
+          done
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: bin/dist/*
