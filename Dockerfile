@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -o /out/file-adapter ./cmd/file-adapter
 
 # ---------- runtime ----------
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata \
  && addgroup -S mneme && adduser -S -G mneme mneme
