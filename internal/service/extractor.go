@@ -455,11 +455,9 @@ func (e *LLMExtractor) SummaryFallback(_ context.Context, messages []*models.His
 	}
 	if len(messages) > keep*2 {
 		b.WriteString("...\n")
+		start := len(messages) - len(tail)
 		for i, m := range tail {
-			if i < keep {
-				continue
-			}
-			b.WriteString(fmt.Sprintf("[%d] %s: %s\n", i+1, m.Role, truncate(m.Content, 120)))
+			b.WriteString(fmt.Sprintf("[%d] %s: %s\n", start+i+1, m.Role, truncate(m.Content, 120)))
 		}
 	}
 	return strings.TrimSpace(b.String())

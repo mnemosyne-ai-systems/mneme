@@ -43,8 +43,9 @@ type HistoryConsumer struct {
 	deduper  cache.Deduper
 	opts     HistoryConsumerOptions
 
-	mu     sync.Mutex
-	buffer []*models.HistoryMessage
+	mu      sync.Mutex
+	buffer  []*models.HistoryMessage
+	pending map[string]struct{} // 已缓冲但尚未落盘的 message_id，用于窗口内去重
 
 	// flushCh 容量为 1 的通知通道：batch 满时由 handle 通知 loop 执行异步 flush，
 	// 避免在消费循环中同步执行可能长达数十秒的重试写入而阻塞消费进度。
@@ -65,6 +66,7 @@ func NewHistoryConsumer(c messagebus.Consumer, inserter storage.BatchInserter, d
 		inserter: inserter,
 		deduper:  deduper,
 		opts:     opts.withDefaults(),
+		pending:  make(map[string]struct{}),
 		flushCh:  make(chan struct{}, 1),
 		stopCh:   make(chan struct{}),
 		stopped:  make(chan struct{}),
@@ -128,7 +130,9 @@ func (h *HistoryConsumer) handle(ctx context.Context, msg *messagebus.Message) e
 	}
 
 	if h.deduper != nil {
-		dup, err := h.deduper.CheckAndAdd(ctx, m.MessageID)
+		// 只检查不标记：标记必须发生在数据交给写入器之后，
+		// 否则崩溃/写入失败时消息会被误判为重复而永久丢失。
+		dup, err := h.deduper.Exists(ctx, m.MessageID)
 		if err != nil {
 			metrics.ConsumerErrorsTotal.WithLabelValues(h.opts.Topic, "dedup").Inc()
 			return fmt.Errorf("history consumer: dedup check: %w", err)
@@ -141,6 +145,15 @@ func (h *HistoryConsumer) handle(ctx context.Context, msg *messagebus.Message) e
 	}
 
 	h.mu.Lock()
+	if h.deduper != nil {
+		if _, ok := h.pending[m.MessageID]; ok {
+			h.mu.Unlock()
+			metrics.DedupFilteredTotal.WithLabelValues(storage.PipelineHistory).Inc()
+			logger.FromContext(ctx).WithField("message_id", m.MessageID).Debug("duplicate history message filtered")
+			return nil
+		}
+		h.pending[m.MessageID] = struct{}{}
+	}
 	h.buffer = append(h.buffer, &m)
 	ready := len(h.buffer) >= h.opts.BatchSize
 	h.mu.Unlock()
@@ -165,6 +178,11 @@ func (h *HistoryConsumer) flush(ctx context.Context) error {
 	}
 	batch := h.buffer
 	h.buffer = nil
+	if h.deduper != nil {
+		for _, m := range batch {
+			delete(h.pending, m.MessageID)
+		}
+	}
 	h.mu.Unlock()
 
 	if err := h.inserter.InsertHistory(ctx, batch); err != nil {
@@ -172,8 +190,21 @@ func (h *HistoryConsumer) flush(ctx context.Context) error {
 		// 写入失败时把数据放回缓冲区，等待下次重试。
 		h.mu.Lock()
 		h.buffer = append(batch, h.buffer...)
+		if h.deduper != nil {
+			for _, m := range batch {
+				h.pending[m.MessageID] = struct{}{}
+			}
+		}
 		h.mu.Unlock()
 		return fmt.Errorf("history consumer: insert: %w", err)
+	}
+	if h.deduper != nil {
+		// 数据已交给写入器后再标记，避免先标记后失败造成消息丢失。
+		for _, m := range batch {
+			if _, err := h.deduper.CheckAndAdd(ctx, m.MessageID); err != nil {
+				logger.L().WithError(err).WithField("message_id", m.MessageID).Warn("history consumer: mark dedup failed")
+			}
+		}
 	}
 	logger.L().WithField("rows", len(batch)).Debug("history batch flushed")
 	return nil

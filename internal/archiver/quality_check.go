@@ -4,12 +4,14 @@ package archiver
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
 	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-labs/mneme/pkg/metrics"
 )
 
 // QualityChecker 数据质量巡检器。
@@ -20,6 +22,8 @@ type QualityChecker struct {
 	stopCh      chan struct{}
 	stopped     chan struct{}
 	once        sync.Once
+	mu          sync.Mutex
+	started     bool
 }
 
 // QualityCheckResult 单项质量检查结果。
@@ -49,15 +53,29 @@ func NewQualityChecker(chClient driver.Conn, redisClient interface{}, interval t
 
 // Start 启动定时巡检。
 func (qc *QualityChecker) Start(ctx context.Context) {
+	qc.mu.Lock()
+	if qc.started {
+		qc.mu.Unlock()
+		return
+	}
+	qc.started = true
+	qc.mu.Unlock()
 	go qc.loop(ctx)
 	logger.L().WithField("interval", qc.interval).Info("quality checker started")
 }
 
-// Stop 停止巡检。
+// Stop 停止巡检。未启动时直接返回，避免等待永远不会关闭的 stopped。
 func (qc *QualityChecker) Stop() {
 	qc.once.Do(func() {
+		qc.mu.Lock()
+		started := qc.started
+		qc.mu.Unlock()
 		close(qc.stopCh)
-		<-qc.stopped
+		if started {
+			<-qc.stopped
+		} else {
+			close(qc.stopped)
+		}
 		logger.L().Info("quality checker stopped")
 	})
 }
@@ -90,7 +108,7 @@ func (qc *QualityChecker) RunOnce(ctx context.Context) error {
 
 	var allResults []QualityCheckResult
 	for _, check := range checks {
-		results, err := check(context.Background())
+		results, err := check(ctx)
 		if err != nil {
 			logger.L().WithError(err).Error("quality check failed")
 			continue
@@ -100,7 +118,7 @@ func (qc *QualityChecker) RunOnce(ctx context.Context) error {
 
 	// 上报指标并记录日志
 	for _, r := range allResults {
-		// metrics.QualityCheckTotal.WithLabelValues(r.Name, strconv.FormatBool(r.Passed)).Inc()
+		metrics.QualityCheckTotal.WithLabelValues(r.Name, strconv.FormatBool(r.Passed)).Inc()
 		if !r.Passed {
 			logger.L().WithFields(map[string]interface{}{
 				"check":     r.Name,
@@ -131,10 +149,9 @@ func (qc *QualityChecker) checkProfileCompleteness(ctx context.Context) ([]Quali
 			countIf(length(profile) > 10) as with_content,
 			avg(length(profile)) as avg_size
 		FROM entity_memory
-		WHERE _deleted = 0
 	`
 
-	rows, err := qc.chClient.Query(context.Background(), query)
+	rows, err := qc.chClient.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query profile stats: %w", err)
 	}
@@ -179,10 +196,9 @@ func (qc *QualityChecker) checkSessionSummaryQuality(ctx context.Context) ([]Qua
 			countIf(length(summary) > 20) as with_summary,
 			avg(length(summary)) as avg_len
 		FROM session_summary
-		WHERE _deleted = 0
 	`
 
-	rows, err := qc.chClient.Query(context.Background(), query)
+	rows, err := qc.chClient.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query summary stats: %w", err)
 	}
@@ -229,7 +245,7 @@ func (qc *QualityChecker) checkHistoryMessageIntegrity(ctx context.Context) ([]Q
 		FROM history_message
 	`
 
-	rows, err := qc.chClient.Query(context.Background(), query)
+	rows, err := qc.chClient.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query history stats: %w", err)
 	}
@@ -289,7 +305,7 @@ func (qc *QualityChecker) checkClickHousePartitionHealth(ctx context.Context) ([
 		GROUP BY table
 	`
 
-	rows, err := qc.chClient.Query(context.Background(), query)
+	rows, err := qc.chClient.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query parts stats: %w", err)
 	}

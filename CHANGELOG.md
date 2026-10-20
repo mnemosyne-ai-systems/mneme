@@ -31,6 +31,26 @@ All notable changes to Mneme are documented in this file. The format follows
   prevented Prometheus from loading the rule) and corrected the quality-check and consumer-lag
   alert expressions to match the real metric names.
 - Added `tools/yamlcheck` (wired into `make yaml-lint` and CI) to catch YAML duplicate keys.
+- **Code review fixes**:
+  - `POST /api/v1/sessions` now creates empty sessions (summary is filled later by the summarizer).
+  - Session-summary and history-profile consumers no longer overwrite messages buffered while a
+    summarization/extraction run is in flight; history dedup marks IDs only after handing data to
+    the writer, with in-buffer duplicate filtering preserved.
+  - `BatchInserter`: buffered audit logs are flushed on shutdown, `max_queue_size` and
+    `max_batch_bytes` are now enforced, and the adaptive-batch configuration is actually wired
+    through; `clickhouse.adaptive_batch_enabled: false` is respected.
+  - Archiver refuses to drop a partition when neither upload nor a locally visible export succeeded.
+  - Admin API: constant-time token comparison and no token material in audit `actor`; no nil
+    summarizer/session-store panics when features are disabled.
+  - Session summary storage clears `_deleted` on re-summarize, refreshes ZSET index TTL, removes
+    index members on purge, falls back to SCAN for filtered searches, and keeps session time
+    ranges monotonic.
+  - Redis bloom dedup rotates its bitmap daily (48h TTL) and fixed inverted RedisBloom semantics.
+  - Quality checker: removed non-existent `_deleted` predicates, propagates context, emits
+    `mnemosyne_mneme_quality_check_total`, no longer deadlocks when stopped without start, and is
+    wired into the app (`archiver.quality_check_interval`).
+  - LLM fallback summaries now include the tail messages; `L2Cache.Get` no longer races on the LRU
+    timestamp; creating a user with an empty profile persists the entity.
 
 ## [0.1.0] - 2026-10-14
 

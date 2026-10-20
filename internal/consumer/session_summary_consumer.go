@@ -177,9 +177,7 @@ func (s *SessionSummaryConsumer) RunSummarization(ctx context.Context) (int, err
 		prev, perr := s.store.GetSummary(ctx, key.Tenant, key.Session)
 		if perr != nil {
 			metrics.ConsumerErrorsTotal.WithLabelValues(s.opts.Topic, "load_summary").Inc()
-			s.mu.Lock()
-			s.buffer[key] = buf
-			s.mu.Unlock()
+			s.requeue(key, buf)
 			if firstErr == nil {
 				firstErr = perr
 			}
@@ -220,9 +218,7 @@ func (s *SessionSummaryConsumer) RunSummarization(ctx context.Context) (int, err
 		}
 
 		if err := summary.Validate(); err != nil {
-			s.mu.Lock()
-			s.buffer[key] = buf
-			s.mu.Unlock()
+			s.requeue(key, buf)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -230,9 +226,7 @@ func (s *SessionSummaryConsumer) RunSummarization(ctx context.Context) (int, err
 		}
 		if _, err := s.store.SaveSummary(ctx, summary); err != nil {
 			metrics.ConsumerErrorsTotal.WithLabelValues(s.opts.Topic, "save_summary").Inc()
-			s.mu.Lock()
-			s.buffer[key] = buf
-			s.mu.Unlock()
+			s.requeue(key, buf)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -241,6 +235,33 @@ func (s *SessionSummaryConsumer) RunSummarization(ctx context.Context) (int, err
 		processed++
 	}
 	return processed, firstErr
+}
+
+// requeue 把总结失败的消息放回缓冲区，并与总结期间新到达的消息合并，
+// 避免直接覆盖导致新消息丢失。
+func (s *SessionSummaryConsumer) requeue(key sessionKey, buf *sessionBuffer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.buffer[key]
+	if !ok {
+		s.buffer[key] = buf
+		return
+	}
+	merged := &sessionBuffer{
+		Messages: append(buf.Messages, current.Messages...),
+		Started:  buf.Started,
+		Ended:    buf.Ended,
+	}
+	if current.Started.Before(merged.Started) || merged.Started.IsZero() {
+		merged.Started = current.Started
+	}
+	if current.Ended.After(merged.Ended) {
+		merged.Ended = current.Ended
+	}
+	if len(merged.Messages) > s.opts.MaxMessagesPerSession {
+		merged.Messages = merged.Messages[len(merged.Messages)-s.opts.MaxMessagesPerSession:]
+	}
+	s.buffer[key] = merged
 }
 
 // Stop 优雅关闭：停止订阅并对剩余消息执行最后一次总结。

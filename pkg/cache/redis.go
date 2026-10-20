@@ -157,8 +157,9 @@ func NewL2Cache(maxSize int, ttl time.Duration, onEvict func(key string, value i
 }
 
 func (c *L2Cache) Get(key string) (interface{}, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	// accessed 会被更新，必须使用写锁；RLock 下写入会造成数据竞争。
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	entry, ok := c.data[key]
 	if !ok {
 		return nil, false

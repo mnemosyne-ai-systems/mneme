@@ -18,6 +18,18 @@ type SessionSummary struct {
 
 // Validate 校验必填字段。
 func (s *SessionSummary) Validate() error {
+	if err := s.ValidateForCreate(); err != nil {
+		return err
+	}
+	if s.Summary == "" {
+		return NewValidationError("summary", "must not be empty")
+	}
+	return nil
+}
+
+// ValidateForCreate 校验创建会话所需的最小字段。
+// 创建阶段允许 summary 为空，总结内容由后续消费者填充。
+func (s *SessionSummary) ValidateForCreate() error {
 	if s == nil {
 		return NewValidationError("session_summary", "summary is nil")
 	}
@@ -26,9 +38,6 @@ func (s *SessionSummary) Validate() error {
 	}
 	if s.TenantID == "" {
 		return NewValidationError("tenant_id", "must not be empty")
-	}
-	if s.Summary == "" {
-		return NewValidationError("summary", "must not be empty")
 	}
 	return nil
 }

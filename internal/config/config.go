@@ -205,6 +205,8 @@ type ArchiverConfig struct {
 	// 用于客户端侧 Parquet 导出；为空时从 clickhouse.hosts 推导（端口换成 8123）。
 	HTTPAddr string    `mapstructure:"http_addr"`
 	OSS      OSSConfig `mapstructure:"oss"`
+	// QualityCheckInterval 数据质量巡检周期（启用归档任务时生效）。
+	QualityCheckInterval time.Duration `mapstructure:"quality_check_interval"`
 }
 
 // TelemetryConfig 指标与链路追踪配置。
@@ -369,6 +371,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("archiver.tables", []string{"history_message"})
 	v.SetDefault("archiver.export_dir", "./data/archive")
 	v.SetDefault("archiver.http_addr", "")
+	v.SetDefault("archiver.quality_check_interval", time.Hour)
 
 	v.SetDefault("telemetry.metrics_enabled", true)
 	v.SetDefault("telemetry.tracing_enabled", false)

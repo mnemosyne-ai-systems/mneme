@@ -74,6 +74,20 @@ func NewRedisSessionSummaryStore(client redis.UniversalClient, inserter storage.
 // 保证管理后台可立即检索到该会话。后续 SaveSummary 会覆盖并追加总结字段。
 func (s *RedisSessionSummaryStore) SaveSessionInfo(ctx context.Context, tenant, sessionID, userID string, startedAt, endedAt time.Time) error {
 	key := cache.SessionKey(tenant, sessionID)
+	existing, err := s.client.HGetAll(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("session store: hgetall: %w", err)
+	}
+	if existing[cache.DeletedField] == "1" {
+		// 已软删除的会话不再被新消息复活，等待管理端显式恢复。
+		return nil
+	}
+	if old, perr := time.Parse(time.RFC3339, existing["started_at"]); perr == nil && !old.IsZero() && old.Before(startedAt) {
+		startedAt = old
+	}
+	if old, perr := time.Parse(time.RFC3339, existing["ended_at"]); perr == nil && old.After(endedAt) {
+		endedAt = old
+	}
 	now := time.Now().UTC()
 	fields := map[string]interface{}{
 		"session_id":  sessionID,
@@ -89,10 +103,14 @@ func (s *RedisSessionSummaryStore) SaveSessionInfo(ctx context.Context, tenant, 
 		pipe.Expire(ctx, key, s.ttl)
 	}
 	if s.useZSetIndex {
+		idxKey := cache.SessionsIndexKey(tenant)
 		score := float64(endedAt.UnixMilli())
-		pipe.ZAdd(ctx, cache.SessionsIndexKey(tenant), redis.Z{Score: score, Member: sessionID})
+		pipe.ZAdd(ctx, idxKey, redis.Z{Score: score, Member: sessionID})
+		if s.ttl > 0 {
+			pipe.Expire(ctx, idxKey, s.ttl)
+		}
 	}
-	_, err := pipe.Exec(ctx)
+	_, err = pipe.Exec(ctx)
 	return err
 }
 
@@ -125,12 +143,17 @@ func (s *RedisSessionSummaryStore) SaveSummary(ctx context.Context, summary *mod
 
 	pipe := s.client.TxPipeline()
 	pipe.HSet(ctx, key, fields)
+	pipe.HDel(ctx, key, cache.DeletedField)
 	if s.ttl > 0 {
 		pipe.Expire(ctx, key, s.ttl)
 	}
 	if s.useZSetIndex {
+		idxKey := cache.SessionsIndexKey(summary.TenantID)
 		score := float64(summary.EndedAt.UnixMilli())
-		pipe.ZAdd(ctx, cache.SessionsIndexKey(summary.TenantID), redis.Z{Score: score, Member: summary.SessionID})
+		pipe.ZAdd(ctx, idxKey, redis.Z{Score: score, Member: summary.SessionID})
+		if s.ttl > 0 {
+			pipe.Expire(ctx, idxKey, s.ttl)
+		}
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return version, fmt.Errorf("session store: hset: %w", err)
@@ -146,7 +169,7 @@ func (s *RedisSessionSummaryStore) SaveSummary(ctx context.Context, summary *mod
 
 // CreateSession 创建会话（先写 ClickHouse，再写 Redis，保证一致性）。
 func (s *RedisSessionSummaryStore) CreateSession(ctx context.Context, summary *models.SessionSummary) error {
-	if err := summary.Validate(); err != nil {
+	if err := summary.ValidateForCreate(); err != nil {
 		return err
 	}
 	// 先写 ClickHouse（源头真相）
@@ -180,12 +203,17 @@ func (s *RedisSessionSummaryStore) CreateSession(ctx context.Context, summary *m
 
 	pipe := s.client.TxPipeline()
 	pipe.HSet(ctx, key, fields)
+	pipe.HDel(ctx, key, cache.DeletedField)
 	if s.ttl > 0 {
 		pipe.Expire(ctx, key, s.ttl)
 	}
 	if s.useZSetIndex {
+		idxKey := cache.SessionsIndexKey(summary.TenantID)
 		score := float64(summary.EndedAt.UnixMilli())
-		pipe.ZAdd(ctx, cache.SessionsIndexKey(summary.TenantID), redis.Z{Score: score, Member: summary.SessionID})
+		pipe.ZAdd(ctx, idxKey, redis.Z{Score: score, Member: summary.SessionID})
+		if s.ttl > 0 {
+			pipe.Expire(ctx, idxKey, s.ttl)
+		}
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("session store: hset: %w", err)
@@ -253,7 +281,8 @@ func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant st
 		}
 	}
 
-	if s.useZSetIndex {
+	// 带 user_id/关键字过滤时 ZSET 只能先分页后过滤，会漏结果，回退到全量 SCAN。
+	if s.useZSetIndex && opts.UserID == "" && q == "" {
 		return s.searchSessionsZSet(ctx, tenant, opts, limit, q, startTime, endTime)
 	}
 
@@ -379,7 +408,10 @@ func (s *RedisSessionSummaryStore) DeleteSession(ctx context.Context, tenant, se
 func (s *RedisSessionSummaryStore) PurgeSession(ctx context.Context, tenant, sessionID string) error {
 	key := cache.SessionKey(tenant, sessionID)
 	verKey := cache.SessionVersionKey(tenant, sessionID)
-	if err := s.client.Del(ctx, key, verKey).Err(); err != nil {
+	pipe := s.client.TxPipeline()
+	pipe.Del(ctx, key, verKey)
+	pipe.ZRem(ctx, cache.SessionsIndexKey(tenant), sessionID)
+	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("session store: del: %w", err)
 	}
 	return nil
@@ -556,7 +588,7 @@ func (s *MemorySessionSummaryStore) SaveSummary(ctx context.Context, summary *mo
 
 // CreateSession 创建会话（先写 ClickHouse，再写内存，保证一致性）。
 func (s *MemorySessionSummaryStore) CreateSession(ctx context.Context, summary *models.SessionSummary) error {
-	if err := summary.Validate(); err != nil {
+	if err := summary.ValidateForCreate(); err != nil {
 		return err
 	}
 	// 先写 ClickHouse

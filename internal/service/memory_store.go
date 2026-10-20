@@ -167,10 +167,8 @@ func (s *RedisProfileStore) SaveProfile(ctx context.Context, tenant, entityType,
 }
 
 // CreateProfile 创建用户画像（先写 ClickHouse，再写 Redis，保证一致性）。
+// 允许空画像：只登记实体，后续 SaveProfile 再补充内容。
 func (s *RedisProfileStore) CreateProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) error {
-	if len(profile) == 0 {
-		return nil
-	}
 	// 先写 ClickHouse（源头真相）
 	if s.inserter != nil {
 		row := &models.EntityMemory{
@@ -197,21 +195,29 @@ func (s *RedisProfileStore) CreateProfile(ctx context.Context, tenant, entityTyp
 	now := time.Now().UTC()
 	updatedAt := now.Format(time.RFC3339)
 
-	fields := make(map[string]interface{}, len(profile)+1)
+	fields := make(map[string]interface{}, len(profile)+5)
 	for k, v := range profile {
 		fields[k] = v
 	}
+	fields["entity_id"] = entityID
+	fields["entity_type"] = entityType
+	fields["tenant_id"] = tenant
 	fields["_version"] = version
 	fields["_updated_at"] = updatedAt
 
 	pipe := s.client.TxPipeline()
 	pipe.HSet(ctx, key, fields)
+	pipe.HDel(ctx, key, cache.DeletedField)
 	if s.ttl > 0 {
 		pipe.Expire(ctx, key, s.ttl)
 	}
 	if s.useZSetIndex && entityType == models.EntityTypeUser {
+		idxKey := cache.UsersIndexKey(tenant)
 		score := float64(time.Now().UTC().UnixMilli())
-		pipe.ZAdd(ctx, cache.UsersIndexKey(tenant), redis.Z{Score: score, Member: entityID})
+		pipe.ZAdd(ctx, idxKey, redis.Z{Score: score, Member: entityID})
+		if s.ttl > 0 {
+			pipe.Expire(ctx, idxKey, s.ttl)
+		}
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("profile store: hset: %w", err)
@@ -466,9 +472,6 @@ func (s *MemoryProfileStore) SaveProfile(ctx context.Context, tenant, entityType
 
 // CreateProfile 创建用户画像（先写 ClickHouse，再写内存，保证一致性）。
 func (s *MemoryProfileStore) CreateProfile(ctx context.Context, tenant, entityType, entityID string, profile map[string]string) error {
-	if len(profile) == 0 {
-		return nil
-	}
 	// 先写 ClickHouse
 	if s.inserter != nil {
 		row := &models.EntityMemory{
@@ -489,10 +492,13 @@ func (s *MemoryProfileStore) CreateProfile(ctx context.Context, tenant, entityTy
 	defer s.mu.Unlock()
 	s.versions[key]++
 	version := s.versions[key]
-	cp := make(map[string]string, len(profile)+1)
+	cp := make(map[string]string, len(profile)+5)
 	for k, v := range profile {
 		cp[k] = v
 	}
+	cp["entity_id"] = entityID
+	cp["entity_type"] = entityType
+	cp["tenant_id"] = tenant
 	cp["_version"] = fmt.Sprintf("%d", version)
 	cp["_updated_at"] = time.Now().UTC().Format(time.RFC3339)
 	s.profiles[key] = cp

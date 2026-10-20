@@ -361,7 +361,7 @@ Common commands: `make build`, `make test`, `make lint`, `make yaml-lint`, `make
 - [ ] Auto-create ClickHouse materialized views for the pre-aggregation tables (target tables ship today)
 - [ ] Redis Cluster support (universal client + `{tenant}` hash tags + master-fanout index rebuild)
 - [ ] Wire the L2 cache into the query path
-- [ ] Feed quality-check results into PrometheusRule alerts
+- [x] Feed quality-check results into PrometheusRule alerts (enable `archiver.enabled`)
 - [ ] Per-tenant quotas and rate limiting
 
 ---

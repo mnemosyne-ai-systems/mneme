@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+// bloomRotationTTL 按天轮转的位图保留时长。
+const bloomRotationTTL = 48 * time.Hour
 
 // BloomFilter 幂等去重抽象。
 type BloomFilter interface {
@@ -54,28 +58,38 @@ func NewRedisBloomFilter(client redis.UniversalClient, opts BloomOptions) *Redis
 	}
 }
 
+// activeKey 返回按天轮转的位图 key。
+// 全局位图无限增长会在数周后饱和，导致几乎所有消息都被误判为重复。
+func (b *RedisBloomFilter) activeKey() string {
+	return b.key + ":" + time.Now().UTC().Format("20060102")
+}
+
 // Add 将 key 标记为已存在。
 func (b *RedisBloomFilter) Add(ctx context.Context, key string) error {
+	active := b.activeKey()
 	if b.useModule {
-		if err := b.client.Do(ctx, "BF.ADD", b.key, key).Err(); err != nil {
+		if err := b.client.Do(ctx, "BF.ADD", active, key).Err(); err != nil {
 			return fmt.Errorf("bloom: BF.ADD: %w", err)
 		}
+		_ = b.client.Expire(ctx, active, bloomRotationTTL).Err()
 		return nil
 	}
 	pipe := b.client.Pipeline()
 	for _, offset := range b.offsets(key) {
-		pipe.SetBit(ctx, b.key, int64(offset), 1)
+		pipe.SetBit(ctx, active, int64(offset), 1)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("bloom: setbit: %w", err)
 	}
+	_ = b.client.Expire(ctx, active, bloomRotationTTL).Err()
 	return nil
 }
 
 // Exists 判断 key 是否可能已存在（存在假阳性，无假阴性）。
 func (b *RedisBloomFilter) Exists(ctx context.Context, key string) (bool, error) {
+	active := b.activeKey()
 	if b.useModule {
-		v, err := b.client.Do(ctx, "BF.EXISTS", b.key, key).Int64()
+		v, err := b.client.Do(ctx, "BF.EXISTS", active, key).Int64()
 		if err != nil {
 			return false, fmt.Errorf("bloom: BF.EXISTS: %w", err)
 		}
@@ -84,7 +98,7 @@ func (b *RedisBloomFilter) Exists(ctx context.Context, key string) (bool, error)
 	pipe := b.client.Pipeline()
 	cmds := make([]*redis.IntCmd, 0, b.hashCount)
 	for _, offset := range b.offsets(key) {
-		cmds = append(cmds, pipe.GetBit(ctx, b.key, int64(offset)))
+		cmds = append(cmds, pipe.GetBit(ctx, active, int64(offset)))
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return false, fmt.Errorf("bloom: getbit: %w", err)
@@ -114,22 +128,25 @@ return 1
 
 // CheckAndAdd 原子"检查后写入"，返回 true 表示此前已存在（重复）。
 func (b *RedisBloomFilter) CheckAndAdd(ctx context.Context, key string) (bool, error) {
+	active := b.activeKey()
 	if b.useModule {
-		// BF.ADD 返回 1 表示元素已存在（未写入），0 表示新添加。
-		v, err := b.client.Do(ctx, "BF.ADD", b.key, key).Int64()
+		// BF.ADD 返回 1 表示新写入，0 表示此前已存在。
+		v, err := b.client.Do(ctx, "BF.ADD", active, key).Int64()
 		if err != nil {
 			return false, fmt.Errorf("bloom: BF.ADD: %w", err)
 		}
-		return v == 1, nil
+		_ = b.client.Expire(ctx, active, bloomRotationTTL).Err()
+		return v == 0, nil
 	}
 	args := make([]interface{}, 0, b.hashCount)
 	for _, offset := range b.offsets(key) {
 		args = append(args, offset)
 	}
-	v, err := checkAndAddScript.Run(ctx, b.client, []string{b.key}, args...).Int64()
+	v, err := checkAndAddScript.Run(ctx, b.client, []string{active}, args...).Int64()
 	if err != nil {
 		return false, fmt.Errorf("bloom: check-and-add: %w", err)
 	}
+	_ = b.client.Expire(ctx, active, bloomRotationTTL).Err()
 	return v == 1, nil
 }
 
@@ -200,6 +217,7 @@ func (m *MemoryBloomFilter) Len() int {
 
 // Deduper 是消费者使用的去重能力（Redis / 内存实现均满足）。
 type Deduper interface {
+	Exists(ctx context.Context, key string) (bool, error)
 	CheckAndAdd(ctx context.Context, key string) (bool, error)
 }
 

@@ -60,7 +60,8 @@ func (c Config) withDefaults() Config {
 	if c.Database == "" {
 		c.Database = "mnemosyne"
 	}
-	if c.AdaptiveBatchEnabled == false {
+	// 仅当完全未配置自适应参数时才默认开启；显式关闭应被尊重。
+	if !c.AdaptiveBatchEnabled && c.MinBatchSize == 0 && c.MaxBatchSize == 0 && c.TargetFlushLatency == 0 {
 		c.AdaptiveBatchEnabled = true
 	}
 	if c.MinBatchSize <= 0 {

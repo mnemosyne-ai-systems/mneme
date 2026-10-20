@@ -118,6 +118,8 @@ archiver:
   # ClickHouse HTTP endpoint (used for Parquet export); derived from clickhouse.hosts when empty
   # (port 9000 -> 8123)
   http_addr: ""
+  # Data quality check interval (runs when archiver.enabled is true)
+  quality_check_interval: 1h
   oss:
     endpoint: ""
     region: ""

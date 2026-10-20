@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -58,20 +59,22 @@ func (h *AdminHandler) authorize(r *http.Request) bool {
 	if h.token == "" {
 		return true
 	}
-	if r.Header.Get("Authorization") == "Bearer "+h.token {
-		return true
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		if constantTimeEqual(strings.TrimPrefix(auth, "Bearer "), h.token) {
+			return true
+		}
 	}
 	// 导出类 GET 链接无法带请求头，允许通过查询参数附带令牌。
 	q := r.URL.Query()
-	return (q.Get("token") == h.token) || (q.Get("__t") == h.token)
+	return constantTimeEqual(q.Get("token"), h.token) || constantTimeEqual(q.Get("__t"), h.token)
 }
 
-// actor 返回操作人标识：优先取 Bearer 令牌，否则记为 "admin"。
-func (h *AdminHandler) actor(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
+func constantTimeEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// actor 返回操作人标识。令牌本身不能写入审计日志，避免凭据泄露。
+func (h *AdminHandler) actor() string {
 	return "admin"
 }
 
@@ -82,7 +85,7 @@ func (h *AdminHandler) recordAudit(r *http.Request, action, target, detail strin
 	}
 	if err := h.audit.Append(r.Context(), models.AuditEntry{
 		TenantID: h.tenant(r),
-		Actor:    h.actor(r),
+		Actor:    h.actor(),
 		Action:   action,
 		Target:   target,
 		Detail:   detail,

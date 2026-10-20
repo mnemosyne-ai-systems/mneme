@@ -42,6 +42,7 @@ type App struct {
 	sessionStore    service.SessionSummaryStore
 	adminHandler    *api.AdminHandler
 	archiveJob      *archiver.Job
+	qualityChecker  *archiver.QualityChecker
 	fileWatcher     *filewatcher.Watcher
 
 	shutdownTracing tracing.ShutdownFunc
@@ -72,9 +73,15 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		MaxIdleConns:  cfg.ClickHouse.MaxIdleConns,
 		DialTimeout:   cfg.ClickHouse.DialTimeout,
 		BatchSize:     cfg.ClickHouse.BatchSize,
+		MaxBatchBytes: cfg.ClickHouse.MaxBatchBytes,
 		FlushInterval: cfg.ClickHouse.FlushInterval,
 		MaxRetries:    cfg.ClickHouse.MaxRetries,
 		AutoMigrate:   cfg.ClickHouse.AutoMigrate,
+
+		AdaptiveBatchEnabled: cfg.ClickHouse.AdaptiveBatchEnabled,
+		MinBatchSize:         cfg.ClickHouse.MinBatchSize,
+		MaxBatchSize:         cfg.ClickHouse.MaxBatchSize,
+		TargetFlushLatency:   cfg.ClickHouse.TargetFlushLatency,
 	})
 	if err != nil {
 		app.cleanup(ctx)
@@ -244,6 +251,7 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 				Prefix:    cfg.Archiver.OSS.Prefix,
 			},
 		})
+		app.qualityChecker = archiver.NewQualityChecker(chClient.Conn(), redisClient, cfg.Archiver.QualityCheckInterval)
 	}
 
 	// HTTP
@@ -267,7 +275,11 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		} else {
 			auditStore = service.NewMemoryAuditStore()
 		}
-		app.adminHandler = api.NewAdminHandler(profileStore, app.sessionStore, auditStore, cfg.Admin.Token, app.sessionConsumer, app.inserter)
+		var summarizer api.SessionSummarizer
+		if app.sessionConsumer != nil {
+			summarizer = app.sessionConsumer
+		}
+		app.adminHandler = api.NewAdminHandler(profileStore, app.sessionStore, auditStore, cfg.Admin.Token, summarizer, app.inserter)
 		routerOpts.Admin = app.adminHandler
 		routerOpts.AdminUI = api.NewAdminUIHandler(cfg.Admin.PageTitle)
 	}
@@ -334,6 +346,9 @@ func (a *App) Run(ctx context.Context) error {
 	if a.archiveJob != nil {
 		a.archiveJob.Start(ctx)
 	}
+	if a.qualityChecker != nil {
+		a.qualityChecker.Start(ctx)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -369,6 +384,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	if a.archiveJob != nil {
 		a.archiveJob.Stop()
+	}
+	if a.qualityChecker != nil {
+		a.qualityChecker.Stop()
 	}
 	// 消费者先落盘再退出
 	if a.historyConsumer != nil {

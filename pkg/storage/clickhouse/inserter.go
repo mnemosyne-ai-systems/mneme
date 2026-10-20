@@ -156,6 +156,10 @@ func (b *BatchInserter) InsertHistory(ctx context.Context, messages []*models.Hi
 		b.mu.Unlock()
 		return ErrInserterClosed
 	}
+	if b.queueFullLocked() {
+		b.mu.Unlock()
+		return ErrBackpressure
+	}
 	b.history = append(b.history, messages...)
 	ready := len(b.history) >= b.batchSize
 	var batch []*models.HistoryMessage
@@ -210,6 +214,15 @@ func (b *BatchInserter) releaseSemaphore() {
 	}
 }
 
+// queueFullLocked 判断所有管道缓冲行数是否达到上限（调用方需持有 b.mu）。
+func (b *BatchInserter) queueFullLocked() bool {
+	if b.maxQueueSize <= 0 {
+		return false
+	}
+	total := len(b.history) + len(b.traces) + len(b.memories) + len(b.summaries) + len(b.auditLogs)
+	return total >= b.maxQueueSize
+}
+
 // InsertTraces 缓冲轨迹数据。
 func (b *BatchInserter) InsertTraces(ctx context.Context, traces []*models.TraceMessage) error {
 	if len(traces) == 0 {
@@ -224,6 +237,10 @@ func (b *BatchInserter) InsertTraces(ctx context.Context, traces []*models.Trace
 	if b.closed {
 		b.mu.Unlock()
 		return ErrInserterClosed
+	}
+	if b.queueFullLocked() {
+		b.mu.Unlock()
+		return ErrBackpressure
 	}
 	b.traces = append(b.traces, traces...)
 	var batch []*models.TraceMessage
@@ -259,6 +276,10 @@ func (b *BatchInserter) InsertMemory(ctx context.Context, memories []*models.Ent
 		b.mu.Unlock()
 		return ErrInserterClosed
 	}
+	if b.queueFullLocked() {
+		b.mu.Unlock()
+		return ErrBackpressure
+	}
 	b.memories = append(b.memories, memories...)
 	var batch []*models.EntityMemory
 	if len(b.memories) >= b.batchSize {
@@ -292,6 +313,10 @@ func (b *BatchInserter) InsertSessionSummary(ctx context.Context, summaries []*m
 	if b.closed {
 		b.mu.Unlock()
 		return ErrInserterClosed
+	}
+	if b.queueFullLocked() {
+		b.mu.Unlock()
+		return ErrBackpressure
 	}
 	b.summaries = append(b.summaries, summaries...)
 	var batch []*models.SessionSummary
@@ -427,6 +452,10 @@ func (b *BatchInserter) InsertAuditLog(ctx context.Context, entry *models.AuditE
 		b.mu.Unlock()
 		return ErrInserterClosed
 	}
+	if b.queueFullLocked() {
+		b.mu.Unlock()
+		return ErrBackpressure
+	}
 	b.auditLogs = append(b.auditLogs, entry)
 	var batch []*models.AuditEntry
 	if len(b.auditLogs) >= b.batchSize {
@@ -448,21 +477,29 @@ func (b *BatchInserter) InsertAuditLog(ctx context.Context, entry *models.AuditE
 
 // writeAuditLog 写入审计日志到 ClickHouse。
 func (b *BatchInserter) writeAuditLog(ctx context.Context, entries []*models.AuditEntry) error {
-	return b.withRetry(ctx, "audit_log", len(entries), func(ctx context.Context) error {
-		batch, err := b.conn.PrepareBatch(ctx, insertAuditLogSQL)
-		if err != nil {
-			return fmt.Errorf("clickhouse: prepare audit batch: %w", err)
-		}
-		for _, e := range entries {
-			id := uint64(time.Now().UnixNano())
-			if err := batch.Append(
-				id, e.TenantID, e.Actor, e.Action, e.Target, e.Detail, e.At,
-			); err != nil {
-				return fmt.Errorf("clickhouse: append audit: %w", err)
-			}
-		}
-		return batch.Send()
+	chunks := splitRows(entries, b.maxBatchBytes, func(e *models.AuditEntry) int {
+		return len(e.TenantID) + len(e.Actor) + len(e.Action) + len(e.Target) + len(e.Detail) + 64
 	})
+	for _, chunk := range chunks {
+		if err := b.withRetry(ctx, "audit_log", len(chunk), func(ctx context.Context) error {
+			batch, err := b.conn.PrepareBatch(ctx, insertAuditLogSQL)
+			if err != nil {
+				return fmt.Errorf("clickhouse: prepare audit batch: %w", err)
+			}
+			for _, e := range chunk {
+				id := uint64(time.Now().UnixNano())
+				if err := batch.Append(
+					id, e.TenantID, e.Actor, e.Action, e.Target, e.Detail, e.At,
+				); err != nil {
+					return fmt.Errorf("clickhouse: append audit: %w", err)
+				}
+			}
+			return batch.Send()
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // QueryAuditLog 查询审计日志（按时间倒序）。
@@ -571,8 +608,8 @@ func (b *BatchInserter) Close() error {
 	<-b.stopped
 
 	b.mu.Lock()
-	history, traces, memories, summaries := b.history, b.traces, b.memories, b.summaries
-	b.history, b.traces, b.memories, b.summaries = nil, nil, nil, nil
+	history, traces, memories, summaries, auditLogs := b.history, b.traces, b.memories, b.summaries, b.auditLogs
+	b.history, b.traces, b.memories, b.summaries, b.auditLogs = nil, nil, nil, nil, nil
 	b.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -591,87 +628,155 @@ func (b *BatchInserter) Close() error {
 	if len(summaries) > 0 {
 		errs = append(errs, b.writeSessionSummary(ctx, summaries))
 	}
+	if len(auditLogs) > 0 {
+		errs = append(errs, b.writeAuditLog(ctx, auditLogs))
+	}
 	return errors.Join(errs...)
 }
 
 func (b *BatchInserter) writeHistory(ctx context.Context, rows []*models.HistoryMessage) error {
-	return b.withRetry(ctx, storage.PipelineHistory, len(rows), func(ctx context.Context) error {
-		batch, err := b.conn.PrepareBatch(ctx, insertHistorySQL)
-		if err != nil {
-			return err
-		}
-		for _, m := range rows {
-			if err := batch.Append(
-				m.MessageID, m.TenantID, m.SessionID, m.UserID, m.Role, m.Content, m.ModelName,
-				m.TotalTokens, m.PromptTokens, m.CompletionTokens, m.ResponseTimeMs, m.Metadata,
-				m.CreatedAt,
-			); err != nil {
-				_ = batch.Abort()
+	chunks := splitRows(rows, b.maxBatchBytes, func(m *models.HistoryMessage) int {
+		return len(m.MessageID) + len(m.TenantID) + len(m.SessionID) + len(m.UserID) +
+			len(m.Role) + len(m.Content) + len(m.ModelName) + len(m.Metadata) + 128
+	})
+	for _, chunk := range chunks {
+		if err := b.withRetry(ctx, storage.PipelineHistory, len(chunk), func(ctx context.Context) error {
+			batch, err := b.conn.PrepareBatch(ctx, insertHistorySQL)
+			if err != nil {
 				return err
 			}
+			for _, m := range chunk {
+				if err := batch.Append(
+					m.MessageID, m.TenantID, m.SessionID, m.UserID, m.Role, m.Content, m.ModelName,
+					m.TotalTokens, m.PromptTokens, m.CompletionTokens, m.ResponseTimeMs, m.Metadata,
+					m.CreatedAt,
+				); err != nil {
+					_ = batch.Abort()
+					return err
+				}
+			}
+			return batch.Send()
+		}); err != nil {
+			return err
 		}
-		return batch.Send()
-	})
+	}
+	return nil
 }
 
 func (b *BatchInserter) writeTraces(ctx context.Context, rows []*models.TraceMessage) error {
-	return b.withRetry(ctx, storage.PipelineTraces, len(rows), func(ctx context.Context) error {
-		batch, err := b.conn.PrepareBatch(ctx, insertTracesSQL)
-		if err != nil {
-			return err
-		}
-		for _, t := range rows {
-			meta := t.Metadata
-			if meta == nil {
-				meta = map[string]string{}
-			}
-			if err := batch.Append(
-				t.RequestID, t.TenantID, t.SessionID, t.UserID, t.StepType, t.StepName,
-				t.Input, t.Output, meta, t.DurationMs, t.Timestamp,
-			); err != nil {
-				_ = batch.Abort()
+	chunks := splitRows(rows, b.maxBatchBytes, func(t *models.TraceMessage) int {
+		return len(t.RequestID) + len(t.TenantID) + len(t.SessionID) + len(t.UserID) +
+			len(t.StepType) + len(t.StepName) + len(t.Input) + len(t.Output) +
+			metadataSize(t.Metadata) + 128
+	})
+	for _, chunk := range chunks {
+		if err := b.withRetry(ctx, storage.PipelineTraces, len(chunk), func(ctx context.Context) error {
+			batch, err := b.conn.PrepareBatch(ctx, insertTracesSQL)
+			if err != nil {
 				return err
 			}
+			for _, t := range chunk {
+				meta := t.Metadata
+				if meta == nil {
+					meta = map[string]string{}
+				}
+				if err := batch.Append(
+					t.RequestID, t.TenantID, t.SessionID, t.UserID, t.StepType, t.StepName,
+					t.Input, t.Output, meta, t.DurationMs, t.Timestamp,
+				); err != nil {
+					_ = batch.Abort()
+					return err
+				}
+			}
+			return batch.Send()
+		}); err != nil {
+			return err
 		}
-		return batch.Send()
-	})
+	}
+	return nil
 }
 
 func (b *BatchInserter) writeMemory(ctx context.Context, rows []*models.EntityMemory) error {
-	return b.withRetry(ctx, storage.PipelineMemory, len(rows), func(ctx context.Context) error {
-		batch, err := b.conn.PrepareBatch(ctx, insertMemorySQL)
-		if err != nil {
-			return err
-		}
-		for _, m := range rows {
-			if err := batch.Append(
-				m.EntityID, m.TenantID, m.EntityType, m.Profile, m.Version, m.UpdatedAt,
-			); err != nil {
-				_ = batch.Abort()
+	chunks := splitRows(rows, b.maxBatchBytes, func(m *models.EntityMemory) int {
+		return len(m.EntityID) + len(m.TenantID) + len(m.EntityType) + len(m.Profile) + 128
+	})
+	for _, chunk := range chunks {
+		if err := b.withRetry(ctx, storage.PipelineMemory, len(chunk), func(ctx context.Context) error {
+			batch, err := b.conn.PrepareBatch(ctx, insertMemorySQL)
+			if err != nil {
 				return err
 			}
+			for _, m := range chunk {
+				if err := batch.Append(
+					m.EntityID, m.TenantID, m.EntityType, m.Profile, m.Version, m.UpdatedAt,
+				); err != nil {
+					_ = batch.Abort()
+					return err
+				}
+			}
+			return batch.Send()
+		}); err != nil {
+			return err
 		}
-		return batch.Send()
-	})
+	}
+	return nil
 }
 
 func (b *BatchInserter) writeSessionSummary(ctx context.Context, rows []*models.SessionSummary) error {
-	return b.withRetry(ctx, storage.PipelineSession, len(rows), func(ctx context.Context) error {
-		batch, err := b.conn.PrepareBatch(ctx, insertSummarySQL)
-		if err != nil {
-			return err
-		}
-		for _, s := range rows {
-			if err := batch.Append(
-				s.SessionID, s.TenantID, s.UserID, s.Summary, s.MessageCount,
-				s.StartedAt, s.EndedAt, s.Version, s.UpdatedAt,
-			); err != nil {
-				_ = batch.Abort()
+	chunks := splitRows(rows, b.maxBatchBytes, func(s *models.SessionSummary) int {
+		return len(s.SessionID) + len(s.TenantID) + len(s.UserID) + len(s.Summary) + 128
+	})
+	for _, chunk := range chunks {
+		if err := b.withRetry(ctx, storage.PipelineSession, len(chunk), func(ctx context.Context) error {
+			batch, err := b.conn.PrepareBatch(ctx, insertSummarySQL)
+			if err != nil {
 				return err
 			}
+			for _, s := range chunk {
+				if err := batch.Append(
+					s.SessionID, s.TenantID, s.UserID, s.Summary, s.MessageCount,
+					s.StartedAt, s.EndedAt, s.Version, s.UpdatedAt,
+				); err != nil {
+					_ = batch.Abort()
+					return err
+				}
+			}
+			return batch.Send()
+		}); err != nil {
+			return err
 		}
-		return batch.Send()
-	})
+	}
+	return nil
+}
+
+// splitRows 按估算字节数切分批次，避免单个 INSERT 批次过大导致 OOM。
+func splitRows[T any](rows []T, maxBytes int, size func(T) int) [][]T {
+	if len(rows) == 0 {
+		return nil
+	}
+	if maxBytes <= 0 {
+		return [][]T{rows}
+	}
+	var chunks [][]T
+	start, total := 0, 0
+	for i, row := range rows {
+		sz := size(row)
+		if i > start && total+sz > maxBytes {
+			chunks = append(chunks, rows[start:i])
+			start = i
+			total = 0
+		}
+		total += sz
+	}
+	return append(chunks, rows[start:])
+}
+
+func metadataSize(meta map[string]string) int {
+	total := 0
+	for k, v := range meta {
+		total += len(k) + len(v)
+	}
+	return total
 }
 
 // withRetry 以指数退避（1s,2s,4s,8s,16s）重试写入。

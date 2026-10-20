@@ -256,6 +256,10 @@ func (j *Job) archivePartition(ctx context.Context, table, partition string) err
 		if err := os.Remove(localPath); err != nil {
 			logger.L().WithError(err).Warn("archiver: remove local export failed")
 		}
+	} else if _, err := os.Stat(localPath); err != nil {
+		// 未配置对象存储时，本地导出文件就是唯一归档；
+		// 服务端 OUTFILE 路径在本进程不可见时必须拒绝删分区。
+		return fmt.Errorf("archiver: exported file %s is not accessible, refusing to drop partition: %w", localPath, err)
 	}
 	if err := j.dropPartition(ctx, table, partition); err != nil {
 		return err
