@@ -11,17 +11,17 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/mnemosyne-labs/mneme/internal/api"
-	"github.com/mnemosyne-labs/mneme/internal/archiver"
-	"github.com/mnemosyne-labs/mneme/internal/config"
-	"github.com/mnemosyne-labs/mneme/internal/consumer"
-	"github.com/mnemosyne-labs/mneme/internal/filewatcher"
-	"github.com/mnemosyne-labs/mneme/internal/service"
-	"github.com/mnemosyne-labs/mneme/pkg/cache"
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
-	chstore "github.com/mnemosyne-labs/mneme/pkg/storage/clickhouse"
-	"github.com/mnemosyne-labs/mneme/pkg/tracing"
+	"github.com/mnemosyne-ai-systems/mneme/internal/api"
+	"github.com/mnemosyne-ai-systems/mneme/internal/archiver"
+	"github.com/mnemosyne-ai-systems/mneme/internal/config"
+	"github.com/mnemosyne-ai-systems/mneme/internal/consumer"
+	"github.com/mnemosyne-ai-systems/mneme/internal/filewatcher"
+	"github.com/mnemosyne-ai-systems/mneme/internal/service"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/cache"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/messagebus"
+	chstore "github.com/mnemosyne-ai-systems/mneme/pkg/storage/clickhouse"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/tracing"
 )
 
 // App 持有 Mneme 运行期的全部组件。

@@ -9,10 +9,10 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/metrics"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
-	"github.com/mnemosyne-labs/mneme/pkg/storage"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/metrics"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/storage"
 )
 
 // ErrInserterClosed 表示写入器已关闭。

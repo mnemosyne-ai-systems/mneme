@@ -2,7 +2,7 @@ APP        := mneme
 VERSION    ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS    := -s -w -X main.version=$(VERSION)
 BIN_DIR    := bin
-IMAGE      ?= mnemosyne-labs/mneme:latest
+IMAGE      ?= mnemosyne-ai-systems/mneme:latest
 
 .PHONY: all build build-file-adapter run test test-cover lint fmt vet yaml-lint tidy clean docker docker-push deps-up deps-down
 

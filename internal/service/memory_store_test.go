@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mnemosyne-labs/mneme/pkg/storage"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/storage"
 )
 
 func TestMemoryProfileStoreSaveAndGet(t *testing.T) {

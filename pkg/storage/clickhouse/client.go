@@ -9,8 +9,8 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/storage"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/storage"
 )
 
 // Config ClickHouse 连接配置。

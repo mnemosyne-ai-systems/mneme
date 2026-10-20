@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne-labs/mneme/pkg/cache"
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
-	"github.com/mnemosyne-labs/mneme/pkg/metrics"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
-	"github.com/mnemosyne-labs/mneme/pkg/storage"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/cache"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/messagebus"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/metrics"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/storage"
 )
 
 // HistoryConsumerOptions 管道一消费者配置。

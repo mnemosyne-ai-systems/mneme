@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
 )
 
 func testMessages(n int) []*models.HistoryMessage {

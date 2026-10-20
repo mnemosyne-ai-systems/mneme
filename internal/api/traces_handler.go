@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mnemosyne-labs/mneme/internal/service"
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/internal/service"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
 )
 
 // TracesHandler 管道二 HTTP 接入。

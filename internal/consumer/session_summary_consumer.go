@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne-labs/mneme/internal/service"
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
-	"github.com/mnemosyne-labs/mneme/pkg/metrics"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/internal/service"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/messagebus"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/metrics"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
 )
 
 // SessionSummaryConsumerOptions 会话总结消费者配置。

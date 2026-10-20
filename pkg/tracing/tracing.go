@@ -69,7 +69,7 @@ func Init(ctx context.Context, cfg Config) (ShutdownFunc, error) {
 
 // Tracer 返回 Mneme 的命名 tracer。
 func Tracer(name string) trace.Tracer {
-	return otel.Tracer("github.com/mnemosyne-labs/mneme/" + name)
+	return otel.Tracer("github.com/mnemosyne-ai-systems/mneme/" + name)
 }
 
 // Start 开启一个 span。

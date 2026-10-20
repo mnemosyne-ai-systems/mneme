@@ -13,9 +13,9 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/mnemosyne-labs/mneme/internal/service"
-	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/internal/service"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/messagebus"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
 )
 
 type stubReader struct {

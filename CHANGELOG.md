@@ -19,9 +19,9 @@ All notable changes to Mneme are documented in this file. The format follows
 
 ### Changed
 
-- **Module path**: `github.com/mnemosyne/mneme` → `github.com/mnemosyne-labs/mneme` (breaking —
+- **Module path**: `github.com/mnemosyne/mneme` → `github.com/mnemosyne-ai-systems/mneme` (breaking —
   import paths must be updated).
-- **Image name**: `mnemosyne/mneme` → `mnemosyne-labs/mneme`.
+- **Image name**: `mnemosyne/mneme` → `mnemosyne-ai-systems/mneme`.
 - **Documentation is now English-first**; code comments, the admin console UI, and OpenAPI
   descriptions remain in Chinese.
 
@@ -74,5 +74,5 @@ First usable release.
 - Operations: ClickHouse → Parquet → object storage archival, data quality checks, and HPA/alerting
   examples.
 
-[Unreleased]: https://github.com/mnemosyne-labs/mneme/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/mnemosyne-labs/mneme/releases/tag/v0.1.0
+[Unreleased]: https://github.com/mnemosyne-ai-systems/mneme/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/mnemosyne-ai-systems/mneme/releases/tag/v0.1.0

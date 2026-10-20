@@ -12,9 +12,9 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/mnemosyne-labs/mneme/pkg/cache"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
-	"github.com/mnemosyne-labs/mneme/pkg/storage"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/cache"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/storage"
 )
 
 // decodeCursor 解析分页游标（偏移量）。

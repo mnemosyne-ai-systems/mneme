@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne-labs/mneme/pkg/models"
-	"github.com/mnemosyne-labs/mneme/pkg/storage"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/storage"
 )
 
 // AuditAction 管理操作审计动作类型。

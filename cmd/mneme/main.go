@@ -9,9 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mnemosyne-labs/mneme/internal/app"
-	"github.com/mnemosyne-labs/mneme/internal/config"
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/internal/app"
+	"github.com/mnemosyne-ai-systems/mneme/internal/config"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
 )
 
 // version 由构建时通过 -ldflags 注入。

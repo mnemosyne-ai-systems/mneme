@@ -281,10 +281,10 @@ trace id, which is also returned in the `X-Request-ID` response header.
 ### Docker
 
 ```bash
-make docker                       # builds mnemosyne-labs/mneme:latest
+make docker                       # builds mnemosyne-ai-systems/mneme:latest
 docker run --rm -p 8080:8080 \
   -v $(pwd)/configs:/app/configs \
-  mnemosyne-labs/mneme:latest
+  mnemosyne-ai-systems/mneme:latest
 ```
 
 ### Docker Compose (dependencies + service)

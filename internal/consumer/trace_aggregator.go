@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
 )
 
 // TraceAggregator 按 request_id 聚合 Span，超时后统一 flush。

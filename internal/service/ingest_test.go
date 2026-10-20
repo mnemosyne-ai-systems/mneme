@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/messagebus"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
 )
 
 func newTestService() (*IngestService, *messagebus.MemoryBus) {

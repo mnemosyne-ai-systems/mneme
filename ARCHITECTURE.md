@@ -4,7 +4,7 @@ Mneme is a **long-term memory service for AI agents**. It aggregates conversatio
 traces, and explicit memory events into **user profiles** (stable attributes across sessions) and
 **session summaries** (what a single conversation covered), and serves them through a unified API.
 
-Module path: `github.com/mnemosyne-labs/mneme` (Go 1.25, single repository, single module).
+Module path: `github.com/mnemosyne-ai-systems/mneme` (Go 1.25, single repository, single module).
 
 > **Note on language**: this document and the other Markdown files are written in English for open
 > source contributions. Code comments, the admin console UI, and the OpenAPI descriptions remain in

@@ -12,10 +12,10 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/mnemosyne-labs/mneme/internal/service"
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
-	"github.com/mnemosyne-labs/mneme/pkg/storage"
+	"github.com/mnemosyne-ai-systems/mneme/internal/service"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/storage"
 )
 
 // SessionSummarizer 可触发即时会话总结的接口（对应 SessionSummaryConsumer.RunSummarization）。

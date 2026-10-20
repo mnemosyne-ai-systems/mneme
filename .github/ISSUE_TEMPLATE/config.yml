@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Questions and ideas
-    url: https://github.com/mnemosyne-labs/mneme/discussions
+    url: https://github.com/mnemosyne-ai-systems/mneme/discussions
     about: Ask questions or discuss performance tuning and architecture here
   - name: Report a security vulnerability
-    url: https://github.com/mnemosyne-labs/mneme/security/advisories/new
+    url: https://github.com/mnemosyne-ai-systems/mneme/security/advisories/new
     about: Please do not file public issues for security bugs — see SECURITY.md

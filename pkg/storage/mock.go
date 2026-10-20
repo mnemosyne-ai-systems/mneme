@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
 )
 
 // MockInserter 是 BatchInserter 的内存实现，用于单元测试。

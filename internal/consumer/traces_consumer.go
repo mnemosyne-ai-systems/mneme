@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
-	"github.com/mnemosyne-labs/mneme/pkg/metrics"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
-	"github.com/mnemosyne-labs/mneme/pkg/storage"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/messagebus"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/metrics"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/storage"
 )
 
 // TracesConsumerOptions 管道二消费者配置。

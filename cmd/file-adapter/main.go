@@ -12,11 +12,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/mnemosyne-labs/mneme/internal/config"
-	"github.com/mnemosyne-labs/mneme/internal/filewatcher"
-	"github.com/mnemosyne-labs/mneme/internal/service"
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/messagebus"
+	"github.com/mnemosyne-ai-systems/mneme/internal/config"
+	"github.com/mnemosyne-ai-systems/mneme/internal/filewatcher"
+	"github.com/mnemosyne-ai-systems/mneme/internal/service"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/messagebus"
 )
 
 var version = "dev"

@@ -89,6 +89,6 @@ jobs:
         with:
           context: .
           push: false
-          tags: mnemosyne-labs/mneme:ci
+          tags: mnemosyne-ai-systems/mneme:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max

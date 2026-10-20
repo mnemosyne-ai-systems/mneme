@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mnemosyne-labs/mneme/pkg/logger"
-	"github.com/mnemosyne-labs/mneme/pkg/metrics"
-	"github.com/mnemosyne-labs/mneme/pkg/models"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/metrics"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
 )
 
 // HTTPSinkConfig HTTPHistorySink 配置。
