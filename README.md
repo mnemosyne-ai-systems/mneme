@@ -94,7 +94,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the detailed design.
 
 ### 1. Requirements
 
-- Go 1.25+
+- Go 1.26+
 - Docker / Docker Compose (to run Pulsar, ClickHouse, Redis)
 - Optional: a local LLM endpoint (Ollama or any OpenAI-compatible server) for refined extraction
 
