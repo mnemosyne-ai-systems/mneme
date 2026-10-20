@@ -30,7 +30,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Metadata (GHCR)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -42,7 +42,7 @@ jobs:
       - name: Metadata (Docker Hub)
         id: meta_dockerhub
         if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/mneme
           tags: |
