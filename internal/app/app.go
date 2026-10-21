@@ -15,6 +15,7 @@ import (
 	"github.com/mnemosyne-ai-systems/mneme/internal/archiver"
 	"github.com/mnemosyne-ai-systems/mneme/internal/config"
 	"github.com/mnemosyne-ai-systems/mneme/internal/consumer"
+	"github.com/mnemosyne-ai-systems/mneme/internal/evolution"
 	"github.com/mnemosyne-ai-systems/mneme/internal/filewatcher"
 	"github.com/mnemosyne-ai-systems/mneme/internal/service"
 	"github.com/mnemosyne-ai-systems/mneme/pkg/cache"
@@ -39,6 +40,7 @@ type App struct {
 	memoryConsumer  *consumer.MemoryConsumer
 	profileConsumer *consumer.HistoryProfileConsumer
 	sessionConsumer *consumer.SessionSummaryConsumer
+	evolutionJob    *evolution.Job
 	sessionStore    service.SessionSummaryStore
 	adminHandler    *api.AdminHandler
 	archiveJob      *archiver.Job
@@ -145,6 +147,19 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 		MaxEvents: cfg.Memory.LLM.MaxEvents,
 	})
 
+	// 自我进化队列：会话摘要落库后安排定时反思（依赖 LLM 与会话总结）。
+	var evolutionQueue service.EvolutionQueue
+	if cfg.Evolution.Enabled {
+		switch {
+		case !cfg.Memory.LLM.Enabled:
+			logger.L().Warn("evolution.enabled requires memory.llm.enabled; summary evolution disabled")
+		case !cfg.Consumer.SessionSummaryEnabled:
+			logger.L().Warn("evolution.enabled requires consumer.session_summary_enabled; summary evolution disabled")
+		default:
+			evolutionQueue = service.NewRedisEvolutionQueue(redisClient, cfg.Cache.SessionTTL)
+		}
+	}
+
 	// 消费者
 	if cfg.Consumer.HistoryEnabled {
 		c, err := messagebus.NewConsumer(busCfg)
@@ -212,7 +227,30 @@ func New(ctx context.Context, cfg *config.Config) (*App, error) {
 			Topic:                 topics.History,
 			SummarizeInterval:     cfg.Consumer.SessionSummaryInterval,
 			MaxMessagesPerSession: cfg.Consumer.SessionSummaryMaxMessages,
+			Evolution:             evolutionQueue,
+			EvolutionDelay:        cfg.Evolution.InitialDelay,
 		})
+	}
+
+	// 摘要自我进化：定时反思会话摘要，并把结果整合为用户级跨会话长期摘要。
+	if evolutionQueue != nil && app.sessionStore != nil {
+		app.evolutionJob = evolution.NewJob(
+			evolutionQueue,
+			app.sessionStore,
+			profileStore,
+			app.inserter,
+			extractor,
+			extractor,
+			evolution.Config{
+				Interval:           cfg.Evolution.Interval,
+				MaxRounds:          cfg.Evolution.MaxRounds,
+				BatchSize:          cfg.Evolution.BatchSize,
+				HistoryLimit:       cfg.Evolution.HistoryLimit,
+				MaxUserSessions:    cfg.Evolution.MaxUserSessions,
+				MaxUsersPerRun:     cfg.Evolution.MaxUsersPerRun,
+				UserSummaryEnabled: cfg.Evolution.UserSummaryEnabled,
+			},
+		)
 	}
 
 	// 文件监听适配器
@@ -338,6 +376,9 @@ func (a *App) Run(ctx context.Context) error {
 			return err
 		}
 	}
+	if a.evolutionJob != nil {
+		a.evolutionJob.Start(ctx)
+	}
 	if a.fileWatcher != nil {
 		if err := a.fileWatcher.Start(ctx); err != nil {
 			return err
@@ -387,6 +428,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	}
 	if a.qualityChecker != nil {
 		a.qualityChecker.Stop()
+	}
+	if a.evolutionJob != nil {
+		a.evolutionJob.Stop()
 	}
 	// 消费者先落盘再退出
 	if a.historyConsumer != nil {

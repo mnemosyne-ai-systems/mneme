@@ -56,6 +56,19 @@ type ProfileStore interface {
 	RebuildUsersIndex(ctx context.Context, tenant string) (int64, error)
 }
 
+// IsInternalProfileKey 判断画像字段是否为内部元数据（不应参与 LLM 提示词或冷存储快照）。
+func IsInternalProfileKey(key string) bool {
+	if strings.HasPrefix(key, "_") {
+		return true
+	}
+	switch key {
+	case "entity_id", "entity_type", "tenant_id":
+		return true
+	default:
+		return false
+	}
+}
+
 // ListOptions 列表查询选项。
 type ListOptions struct {
 	// Cursor 分页游标（由上一页返回的 next_cursor），空表示从首页。

@@ -123,6 +123,32 @@ func SessionsIndexKey(tenant string) string {
 	return fmt.Sprintf("%s:sessions:%s", KeyPrefix, tenant)
 }
 
+// UserSessionsIndexKey 返回某用户会话的 ZSET 索引 Key（按 ended_at 排序）：
+// mnemosyne:mneme:sessions:{tenant}:user:{user_id}
+// member = session_id, score = ended_at unix ms
+func UserSessionsIndexKey(tenant, userID string) string {
+	return fmt.Sprintf("%s:sessions:%s:user:%s", KeyPrefix, tenant, userID)
+}
+
+// UserSessionsIndexReadyKey 标记某租户的每用户会话索引已完成回填（避免升级后索引残缺或空用户反复 SCAN）。
+// mnemosyne:mneme:sessions:{tenant}:user_ready
+func UserSessionsIndexReadyKey(tenant string) string {
+	return fmt.Sprintf("%s:sessions:%s:user_ready", KeyPrefix, tenant)
+}
+
+// EvolutionQueueKey 返回会话自我进化调度队列（全局 ZSET）：
+// mnemosyne:mneme:evolution:due
+// member = {tenant}\x1f{session_id}, score = 下次反思时间 unix ms
+func EvolutionQueueKey() string {
+	return KeyPrefix + ":evolution:due"
+}
+
+// EvolutionStateKey 返回单个会话的进化状态 Hash（记录已完成的反思轮次）：
+// mnemosyne:mneme:evolution:state:{tenant}:{session_id}
+func EvolutionStateKey(tenant, sessionID string) string {
+	return fmt.Sprintf("%s:evolution:state:%s:%s", KeyPrefix, tenant, sessionID)
+}
+
 // L2Cache 本地二级缓存（内存级，带 TTL 和 LRU 淘汰）。
 type L2Cache struct {
 	mu      sync.RWMutex

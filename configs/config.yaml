@@ -71,6 +71,19 @@ consumer:
   session_summary_interval: 10m
   session_summary_max_messages: 2000
 
+# Self-evolving summaries: periodically reflect on session summaries and fold the result into a
+# cross-session user narrative. Requires memory.llm.enabled and consumer.session_summary_enabled.
+evolution:
+  enabled: false
+  interval: 1h            # queue scan period
+  initial_delay: 10m      # delay before the first reflection after a summary is written
+  max_rounds: 2           # consecutive reflection rounds per summary version
+  batch_size: 10          # sessions processed per scan
+  history_limit: 200      # recent messages loaded for reflection
+  max_user_sessions: 10   # recent session summaries used for cross-session synthesis
+  max_users_per_run: 10   # users synthesized per scan (bounds LLM calls)
+  user_summary_enabled: true  # store the result in the user's `evolving_summary` profile field
+
 memory:
   llm:
     enabled: false

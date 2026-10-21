@@ -235,3 +235,52 @@ func TestSessionSummaryConsumerIncrementalRefines(t *testing.T) {
 		t.Errorf("summary not refined: %q", second.Summary)
 	}
 }
+
+type scheduledEvolution struct {
+	tenant  string
+	session string
+	due     time.Time
+}
+
+type stubEvolutionScheduler struct {
+	calls []scheduledEvolution
+}
+
+func (s *stubEvolutionScheduler) Schedule(_ context.Context, tenant, session string, due time.Time) error {
+	s.calls = append(s.calls, scheduledEvolution{tenant: tenant, session: session, due: due})
+	return nil
+}
+
+func TestSessionSummaryConsumerSchedulesEvolution(t *testing.T) {
+	ctx := context.Background()
+	bus := messagebus.NewMemoryBus()
+	store := service.NewMemorySessionSummaryStore(storage.NewMockInserter())
+	scheduler := &stubEvolutionScheduler{}
+
+	c := NewSessionSummaryConsumer(bus, stubSummarizer{}, store, SessionSummaryConsumerOptions{
+		Topic: "h", MaxMessagesPerSession: 2000, Evolution: scheduler, EvolutionDelay: time.Minute,
+	})
+	if err := c.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Stop(ctx) }()
+
+	_ = bus.Send(ctx, "h", "", mustJSON(t, &models.HistoryMessage{
+		MessageID: "m1", TenantID: "t1", SessionID: "s1", UserID: "u1",
+		Role: models.RoleUser, Content: "hi", CreatedAt: time.Now().UTC(),
+	}))
+	if _, err := c.RunSummarization(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(scheduler.calls) != 1 {
+		t.Fatalf("scheduled calls = %d, want 1", len(scheduler.calls))
+	}
+	call := scheduler.calls[0]
+	if call.tenant != "t1" || call.session != "s1" {
+		t.Errorf("scheduled %s/%s, want t1/s1", call.tenant, call.session)
+	}
+	if call.due.Before(time.Now().Add(30 * time.Second)) {
+		t.Errorf("due = %v, want about a minute later", call.due)
+	}
+}

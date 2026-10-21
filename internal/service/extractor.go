@@ -36,6 +36,18 @@ type SessionSummarizer interface {
 	SummaryRefineFallback(ctx context.Context, prevSummary string, newMessages []*models.HistoryMessage) string
 }
 
+// SessionReflector 对已有会话摘要做自我反思与重写。
+type SessionReflector interface {
+	// ReflectSummary 基于完整对话记录审视并改进已有摘要；未启用或失败时返回错误。
+	ReflectSummary(ctx context.Context, prevSummary string, messages []*models.HistoryMessage) (string, error)
+}
+
+// ProfileSynthesizer 把用户画像与最近会话摘要整合为跨会话长期摘要。
+type ProfileSynthesizer interface {
+	// SynthesizeProfile 输出一段跨会话的长期摘要；未启用或失败时返回错误。
+	SynthesizeProfile(ctx context.Context, profile map[string]string, sessions []*models.SessionSummary) (string, error)
+}
+
 // LLMConfig LLM 萃取配置。
 type LLMConfig struct {
 	Enabled   bool
@@ -84,6 +96,27 @@ const refinePrompt = `你是一个对话总结助手。以下是某场会话已�
 %s
 
 新增消息：
+`
+
+const reflectPrompt = `你是一个严格的对话摘要审稿人。以下是某场会话的当前摘要与完整对话记录。
+请检查当前摘要是否遗漏关键决策、待办或重要事实，是否与对话内容不符，是否包含已过时的信息。
+在保留仍然有效内容的基础上，输出改进后的完整摘要（2-4 句中文）。
+只输出摘要文本，不要输出 JSON、列表或任何解释。
+
+当前摘要：
+%s
+
+完整对话记录：
+`
+
+const synthesizePrompt = `你是一个跨会话长期记忆整合器。以下是用户画像（JSON）与该用户最近的会话摘要。
+请综合这些信息，输出一段 3-5 句中文的"用户长期摘要"，描述用户的稳定偏好、长期目标、近期进展与待办。
+只输出摘要文本，不要输出 JSON、列表或任何解释，不要编造未出现的信息。
+
+用户画像：
+%s
+
+最近会话摘要（按时间倒序）：
 `
 
 type chatMessage struct {
@@ -413,6 +446,70 @@ func (e *LLMExtractor) RefineSummary(ctx context.Context, prevSummary string, ne
 	return e.llmSummarize(ctx, "你是专业的对话总结助手，只对已有摘要做增量更新并输出完整新摘要。", b.String())
 }
 
+// ReflectSummary 基于完整对话记录审视并重写已有摘要。
+func (e *LLMExtractor) ReflectSummary(ctx context.Context, prevSummary string, messages []*models.HistoryMessage) (string, error) {
+	if !e.cfg.Enabled {
+		return "", fmt.Errorf("llm disabled")
+	}
+	if strings.TrimSpace(prevSummary) == "" {
+		return "", fmt.Errorf("no summary to reflect on")
+	}
+	if len(messages) == 0 {
+		return "", fmt.Errorf("no messages to reflect on")
+	}
+	msgs := messages
+	if len(msgs) > e.cfg.MaxEvents {
+		msgs = msgs[len(msgs)-e.cfg.MaxEvents:]
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(reflectPrompt, prevSummary))
+	for i, m := range msgs {
+		role := m.Role
+		if role == "" {
+			role = "unknown"
+		}
+		b.WriteString(fmt.Sprintf("[%d] %s: %s\n", i+1, role, m.Content))
+	}
+	return e.llmSummarize(ctx, "你是严格的对话摘要审稿人，只输出改进后的摘要文本。", b.String())
+}
+
+// SynthesizeProfile 把用户画像与最近会话摘要整合为跨会话长期摘要。
+func (e *LLMExtractor) SynthesizeProfile(ctx context.Context, profile map[string]string, sessions []*models.SessionSummary) (string, error) {
+	if !e.cfg.Enabled {
+		return "", fmt.Errorf("llm disabled")
+	}
+	filtered := make(map[string]string, len(profile))
+	for k, v := range profile {
+		if IsInternalProfileKey(k) || v == "" {
+			continue
+		}
+		filtered[k] = v
+	}
+	validSessions := 0
+	for _, s := range sessions {
+		if s != nil && strings.TrimSpace(s.Summary) != "" {
+			validSessions++
+		}
+	}
+	if len(filtered) == 0 && validSessions == 0 {
+		return "", fmt.Errorf("no profile or sessions to synthesize")
+	}
+	raw, err := json.Marshal(filtered)
+	if err != nil {
+		return "", fmt.Errorf("marshal profile: %w", err)
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(synthesizePrompt, string(raw)))
+	for i, s := range sessions {
+		if s == nil || strings.TrimSpace(s.Summary) == "" {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("[%d] %s ~ %s: %s\n", i+1,
+			s.StartedAt.UTC().Format(time.RFC3339), s.EndedAt.UTC().Format(time.RFC3339), s.Summary))
+	}
+	return e.llmSummarize(ctx, "你是跨会话长期记忆整合器，只输出整合后的摘要文本。", b.String())
+}
+
 // SummaryRefineFallback 退化增量更新：把旧摘要与新消息拼接。
 func (e *LLMExtractor) SummaryRefineFallback(_ context.Context, prevSummary string, newMessages []*models.HistoryMessage) string {
 	if prevSummary == "" {
@@ -501,4 +598,8 @@ func truncate(s string, n int) string {
 	return string(r[:n]) + "..."
 }
 
-var _ SessionSummarizer = (*LLMExtractor)(nil)
+var (
+	_ SessionSummarizer  = (*LLMExtractor)(nil)
+	_ SessionReflector   = (*LLMExtractor)(nil)
+	_ ProfileSynthesizer = (*LLMExtractor)(nil)
+)

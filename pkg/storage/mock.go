@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
@@ -146,6 +147,26 @@ func (m *MockInserter) SummaryCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.Summaries)
+}
+
+// QueryRecentHistoryBySession 返回指定会话最近 limit 条历史消息（按时间升序）。
+func (m *MockInserter) QueryRecentHistoryBySession(_ context.Context, tenant, sessionID string, limit int) ([]*models.HistoryMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*models.HistoryMessage
+	for _, h := range m.History {
+		if h.TenantID == tenant && h.SessionID == sessionID {
+			out = append(out, h)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	if len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
 }
 
 // QueryHistoryBySession 返回指定会话的历史消息（内存过滤）。

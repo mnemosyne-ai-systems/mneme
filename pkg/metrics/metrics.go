@@ -98,6 +98,11 @@ var (
 		Name: "mnemosyne_mneme_quality_check_total",
 		Help: "Total quality checks by name and result.",
 	}, []string{"check", "passed"})
+	// EvolutionTotal 自我进化任务结果计数（stage: session/user, result: evolved/skipped/error）。
+	EvolutionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "mnemosyne_mneme_evolution_total",
+		Help: "Total summary evolution outcomes by stage and result.",
+	}, []string{"stage", "result"})
 	// WriteQueueSize 当前写入队列积压大小。
 	WriteQueueSize = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "mneme_write_queue_size",

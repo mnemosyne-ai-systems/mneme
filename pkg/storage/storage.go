@@ -16,6 +16,8 @@ type BatchInserter interface {
 	InsertAuditLog(ctx context.Context, entry *models.AuditEntry) error
 	// QueryHistoryBySession 查询某会话的完整对话历史（按时间升序）。
 	QueryHistoryBySession(ctx context.Context, tenant, sessionID string, limit, offset int) ([]*models.HistoryMessage, error)
+	// QueryRecentHistoryBySession 查询某会话最近 limit 条历史（按时间升序返回）。
+	QueryRecentHistoryBySession(ctx context.Context, tenant, sessionID string, limit int) ([]*models.HistoryMessage, error)
 	// QueryAuditLog 查询审计日志（按时间倒序）。
 	QueryAuditLog(ctx context.Context, tenant string, limit, offset int) ([]*models.AuditEntry, error)
 	Flush() error

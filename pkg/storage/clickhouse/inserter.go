@@ -819,6 +819,46 @@ func backoffDelay(attempt int) time.Duration {
 	return d
 }
 
+// QueryRecentHistoryBySession 查询某会话最近 limit 条历史（按时间升序返回）。
+func (b *BatchInserter) QueryRecentHistoryBySession(ctx context.Context, tenant, sessionID string, limit int) ([]*models.HistoryMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `
+		SELECT message_id, tenant_id, session_id, user_id, role, content, model_name,
+		       total_tokens, prompt_tokens, completion_tokens, response_time_ms, metadata, created_at
+		FROM (
+			SELECT message_id, tenant_id, session_id, user_id, role, content, model_name,
+			       total_tokens, prompt_tokens, completion_tokens, response_time_ms, metadata, created_at
+			FROM history_message
+			WHERE tenant_id = ? AND session_id = ?
+			ORDER BY created_at DESC
+			LIMIT ?
+		)
+		ORDER BY created_at ASC
+	`
+	rows, err := b.conn.Query(ctx, query, tenant, sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: query recent history: %w", err)
+	}
+	defer rows.Close()
+
+	var msgs []*models.HistoryMessage
+	for rows.Next() {
+		var m models.HistoryMessage
+		if err := rows.Scan(
+			&m.MessageID, &m.TenantID, &m.SessionID, &m.UserID,
+			&m.Role, &m.Content, &m.ModelName,
+			&m.TotalTokens, &m.PromptTokens, &m.CompletionTokens,
+			&m.ResponseTimeMs, &m.Metadata, &m.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("clickhouse: scan recent history: %w", err)
+		}
+		msgs = append(msgs, &m)
+	}
+	return msgs, rows.Err()
+}
+
 // QueryHistoryBySession 查询某会话的完整对话历史（按时间升序）。
 func (b *BatchInserter) QueryHistoryBySession(ctx context.Context, tenant, sessionID string, limit, offset int) ([]*models.HistoryMessage, error) {
 	if limit <= 0 {

@@ -22,6 +22,10 @@ type SessionSummaryConsumerOptions struct {
 	SummarizeInterval time.Duration
 	// MaxMessagesPerSession 单会话最多缓冲的消息数，超出丢弃最旧的。
 	MaxMessagesPerSession int
+	// Evolution 可选的自我进化调度器；非 nil 时每次摘要落库后安排一次反思。
+	Evolution service.EvolutionScheduler
+	// EvolutionDelay 首次反思延迟，默认 10 分钟。
+	EvolutionDelay time.Duration
 }
 
 func (o SessionSummaryConsumerOptions) withDefaults() SessionSummaryConsumerOptions {
@@ -33,6 +37,9 @@ func (o SessionSummaryConsumerOptions) withDefaults() SessionSummaryConsumerOpti
 	}
 	if o.MaxMessagesPerSession <= 0 {
 		o.MaxMessagesPerSession = 2000
+	}
+	if o.EvolutionDelay <= 0 {
+		o.EvolutionDelay = 10 * time.Minute
 	}
 	return o
 }
@@ -232,9 +239,21 @@ func (s *SessionSummaryConsumer) RunSummarization(ctx context.Context) (int, err
 			}
 			continue
 		}
+		s.scheduleEvolution(ctx, key)
 		processed++
 	}
 	return processed, firstErr
+}
+
+// scheduleEvolution 在摘要落库后安排一次自我反思；失败仅记录日志，不影响总结主流程。
+func (s *SessionSummaryConsumer) scheduleEvolution(ctx context.Context, key sessionKey) {
+	if s.opts.Evolution == nil {
+		return
+	}
+	due := time.Now().UTC().Add(s.opts.EvolutionDelay)
+	if err := s.opts.Evolution.Schedule(ctx, key.Tenant, key.Session, due); err != nil {
+		logger.FromContext(ctx).WithError(err).Warn("schedule session summary evolution failed")
+	}
 }
 
 // requeue 把总结失败的消息放回缓冲区，并与总结期间新到达的消息合并，

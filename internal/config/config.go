@@ -17,6 +17,7 @@ type Config struct {
 	Redis       RedisConfig       `mapstructure:"redis"`
 	Cache       CacheConfig       `mapstructure:"cache"`
 	Consumer    ConsumerConfig    `mapstructure:"consumer"`
+	Evolution   EvolutionConfig   `mapstructure:"evolution"`
 	Memory      MemoryConfig      `mapstructure:"memory"`
 	FileWatcher FileWatcherConfig `mapstructure:"filewatcher"`
 	Adapter     AdapterConfig     `mapstructure:"adapter"`
@@ -121,6 +122,28 @@ type ConsumerConfig struct {
 	SessionSummaryInterval time.Duration `mapstructure:"session_summary_interval"`
 	// SessionSummaryMaxMessages 单会话最多缓冲的消息数，超出丢弃最旧的。
 	SessionSummaryMaxMessages int `mapstructure:"session_summary_max_messages"`
+}
+
+// EvolutionConfig 会话摘要自我进化（定时反思 + 跨会话整合）配置。
+// 依赖 memory.llm.enabled 与 consumer.session_summary_enabled。
+type EvolutionConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Interval 进化队列扫描周期。
+	Interval time.Duration `mapstructure:"interval"`
+	// InitialDelay 摘要生成后到首次反思的延迟。
+	InitialDelay time.Duration `mapstructure:"initial_delay"`
+	// MaxRounds 同一份摘要最多连续反思的轮次。
+	MaxRounds int `mapstructure:"max_rounds"`
+	// BatchSize 每轮最多处理的会话数。
+	BatchSize int `mapstructure:"batch_size"`
+	// HistoryLimit 反思时读取的最近消息数。
+	HistoryLimit int `mapstructure:"history_limit"`
+	// MaxUserSessions 跨会话整合时使用的最新会话摘要数。
+	MaxUserSessions int `mapstructure:"max_user_sessions"`
+	// MaxUsersPerRun 单轮最多做跨会话整合的用户数（限制 LLM 调用量）。
+	MaxUsersPerRun int `mapstructure:"max_users_per_run"`
+	// UserSummaryEnabled 是否把演化结果整合进用户画像的跨会话长期摘要。
+	UserSummaryEnabled bool `mapstructure:"user_summary_enabled"`
 }
 
 // LLMConfig 长期记忆萃取所使用的 LLM 配置。
@@ -344,6 +367,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("consumer.session_summary_enabled", true)
 	v.SetDefault("consumer.session_summary_interval", 10*time.Minute)
 	v.SetDefault("consumer.session_summary_max_messages", 2000)
+
+	v.SetDefault("evolution.enabled", false)
+	v.SetDefault("evolution.interval", time.Hour)
+	v.SetDefault("evolution.initial_delay", 10*time.Minute)
+	v.SetDefault("evolution.max_rounds", 2)
+	v.SetDefault("evolution.batch_size", 10)
+	v.SetDefault("evolution.history_limit", 200)
+	v.SetDefault("evolution.max_user_sessions", 10)
+	v.SetDefault("evolution.max_users_per_run", 10)
+	v.SetDefault("evolution.user_summary_enabled", true)
 
 	v.SetDefault("memory.llm.enabled", false)
 	v.SetDefault("memory.llm.timeout", 20*time.Second)
