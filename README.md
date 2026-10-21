@@ -89,6 +89,23 @@ Consumer    Consumer        Consumer          Consumer          Consumer
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the detailed design.
 
+### Self-evolving summaries
+
+With `evolution.enabled: true` (requires `memory.llm.enabled` and `consumer.session_summary_enabled`),
+a background job keeps summaries improving instead of freezing them at write time:
+
+1. A successful summary write schedules the session in a Redis ZSET; the first reflection runs after
+   `evolution.initial_delay` (default `10m`).
+2. Each scan (`evolution.interval`, default `1h`) re-reads the session's recent ClickHouse history and
+   rewrites the summary until it converges or `evolution.max_rounds` (default `2`) is reached; failed
+   rounds are retried on the next scan.
+3. With `evolution.user_summary_enabled: true`, up to `evolution.max_user_sessions` recent session
+   summaries are synthesized with the profile and stored as the profile's `evolving_summary` field,
+   giving a cross-session narrative that evolves over time.
+
+Reflections never overwrite a summary that changed while the LLM call was in flight (version check),
+and `evolution.max_users_per_run` bounds cross-session synthesis per scan.
+
 ---
 
 ## Quick Start
@@ -257,6 +274,10 @@ timestamp columns.
 | `mnemosyne:mneme:bloom:{pipeline}:{tenant}` | Bloom | Message deduplication |
 | `mnemosyne:mneme:audit:{tenant}` | List | Audit log (ClickHouse is the source of truth) |
 
+Session listings for a user read the per-user ZSET instead of scanning the global index; each tenant
+is backfilled once on first use (2,000 sessions per pipeline batch), and purge/rebuild maintain both
+indexes.
+
 Hot reads fall through to ClickHouse on a miss and repopulate Redis.
 
 ---
@@ -346,6 +367,7 @@ watching (fsnotify + debounce + resumable state).
 │   ├── archiver/         # ClickHouse → Parquet → object storage, quality checks
 │   ├── config/           # Viper configuration loading and defaults
 │   ├── consumer/         # Pulsar consumers, trace aggregation, profile/summary extraction
+│   ├── evolution/        # scheduled summary reflection and cross-session synthesis
 │   ├── filewatcher/      # file watching and parsing
 │   └── service/          # ingestion, profile/session stores, audit, HTTP sink
 ├── pkg/
