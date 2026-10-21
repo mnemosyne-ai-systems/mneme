@@ -314,3 +314,27 @@ recommended because it replaces `SCAN`-based listing with `ZREVRANGEBYSCORE` cur
 | `mnemosyne:mneme:evolution:state:{tenant}:{session_id}` | Hash | Reflection round state |
 | `mnemosyne:mneme:bloom:{pipeline}:{tenant}` | Bloom | Deduplication |
 | `mnemosyne:mneme:audit:{tenant}` | List | Audit entries (ClickHouse is authoritative) |
+
+---
+
+## 10. File adapter
+
+`cmd/file-adapter` watches directories (`filewatcher.*`) and converts files into history messages,
+delivering them through the HTTP batch API (default) or Pulsar. JSON / JSONL files are sniffed from
+the first 256 KB, so one directory can mix formats:
+
+| Framework | File shape | Mapping |
+|-----------|------------|---------|
+| Claude Code | `~/.claude/projects/**/*.jsonl` | `type` → role, `message.content` blocks, `tool_result` → `tool` |
+| Qwen Code | `~/.qwen/tmp/*/chats/*.jsonl`, legacy `*.json` | `message.parts` (thoughts skipped), `usageMetadata` tokens, `projectHash` |
+| Kimi CLI | `~/.kimi/sessions/*/*/context.jsonl` | `Message` records; `_system_prompt` / `_usage` / `_checkpoint` controls skipped |
+| Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | `response_item` / `event_msg` payloads, `session_meta` → session |
+| Gemini CLI | `~/.gemini/tmp/*/chats/session-*.json` | `messages[]` with `type` `user` / `gemini` |
+| Claude export | `conversations.json` | `chat_messages[]` (`sender` human / assistant) |
+| ChatGPT export | `conversations.json` | `mapping` tree; follows `current_node`, otherwise DFS over all branches |
+| Generic | `.md` / `.json` / `.jsonl` / `.txt` | Frontmatter Markdown, record arrays, plain text |
+
+IDs are stable across re-scans (framework UUIDs when present, otherwise a content hash), and
+`metadata.framework` records the source. Unknown JSON shapes fall back to the generic parser;
+framework parse failures are reported instead of silently dropping data. `.json` exports are read
+into memory, so very large exports should be split before ingestion.

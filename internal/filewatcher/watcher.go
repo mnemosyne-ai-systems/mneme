@@ -30,7 +30,7 @@ type Config struct {
 
 func (c Config) withDefaults() Config {
 	if len(c.Extensions) == 0 {
-		c.Extensions = []string{".md", ".jsonl", ".txt"}
+		c.Extensions = []string{".md", ".jsonl", ".json", ".txt"}
 	}
 	if c.Debounce <= 0 {
 		c.Debounce = 2 * time.Second

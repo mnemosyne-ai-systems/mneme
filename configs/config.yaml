@@ -96,7 +96,7 @@ memory:
 filewatcher:
   enabled: false
   dirs: ["./data/inbox"]
-  extensions: [".md", ".jsonl", ".txt"]
+  extensions: [".md", ".jsonl", ".json", ".txt"]
   debounce: 2s
   state_file: "./data/.filewatcher_state.json"
   tenant_id: "default"

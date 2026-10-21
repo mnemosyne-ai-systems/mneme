@@ -1,9 +1,12 @@
 // Package filewatcher 实现文件驱动的历史消息接入：
-// 监听目录变更，解析 .md / .jsonl / .txt 文件并转换为 HistoryMessage。
+// 监听目录变更，解析 .md / .jsonl / .json / .txt 文件并转换为 HistoryMessage。
+// JSON / JSONL 会先尝试识别 Claude Code、Qwen Code、Kimi CLI、Codex CLI、Gemini CLI、
+// Claude/ChatGPT 导出等框架格式。
 package filewatcher
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -27,16 +30,29 @@ type Parser interface {
 	Parse(path string, tenantID string) ([]*models.HistoryMessage, error)
 }
 
-// Registry 按扩展名分发解析器。
+// Registry 按扩展名分发解析器；json / jsonl 先做框架格式嗅探。
 type Registry struct {
-	parsers map[string]Parser
+	parsers  map[string]Parser
+	adapters []frameworkAdapter
 }
 
-// NewRegistry 创建解析器注册表，内置 md / jsonl / txt 解析器。
+// NewRegistry 创建解析器注册表，内置 md / jsonl / json / txt 解析器。
 func NewRegistry() *Registry {
-	r := &Registry{parsers: map[string]Parser{}}
+	r := &Registry{
+		parsers: map[string]Parser{},
+		adapters: []frameworkAdapter{
+			&kimiAdapter{},
+			&qwenCodeAdapter{},
+			&claudeCodeAdapter{},
+			&codexAdapter{},
+			&geminiAdapter{},
+			&claudeExportAdapter{},
+			&chatGPTExportAdapter{},
+		},
+	}
 	r.Register(&MarkdownParser{})
 	r.Register(&JSONLParser{})
+	r.Register(&JSONParser{})
 	r.Register(&TextParser{})
 	return r
 }
@@ -50,9 +66,18 @@ func (r *Registry) Get(ext string) (Parser, bool) {
 	return p, ok
 }
 
-// Parse 按文件扩展名解析。
+// Parse 按文件扩展名解析；json / jsonl 优先交给内容嗅探匹配到的框架适配器。
 func (r *Registry) Parse(path, tenantID string) ([]*models.HistoryMessage, error) {
 	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".json" || ext == ".jsonl" {
+		if adapter := detectFramework(r.adapters, path, ext); adapter != nil {
+			msgs, err := adapter.Parse(path, tenantID)
+			if err != nil {
+				return nil, fmt.Errorf("filewatcher: %s (%s): %w", path, adapter.Name(), err)
+			}
+			return msgs, nil
+		}
+	}
 	p, ok := r.Get(ext)
 	if !ok {
 		return nil, fmt.Errorf("filewatcher: unsupported extension %q", ext)
@@ -201,30 +226,10 @@ func (p *JSONLParser) Parse(path, tenantID string) ([]*models.HistoryMessage, er
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, fmt.Errorf("filewatcher: %s line %d: %w", path, lineNo, err)
 		}
-		content := firstNonEmpty(rec.Content, rec.Text)
-		if content == "" {
+		msg := recordMessage(path, tenantID, rec, strconv.Itoa(lineNo)+firstNonEmpty(rec.Content, rec.Text), sessionFallback)
+		if msg == nil {
 			continue
 		}
-		msg := &models.HistoryMessage{
-			MessageID:        firstNonEmpty(rec.MessageID, rec.ID, deriveID(path, strconv.Itoa(lineNo)+content)),
-			TenantID:         firstNonEmpty(rec.TenantID, tenantID),
-			SessionID:        firstNonEmpty(rec.SessionID, rec.Conversation, sessionFallback),
-			UserID:           rec.UserID,
-			Role:             firstNonEmpty(rec.Role, models.RoleUser),
-			Content:          content,
-			ModelName:        firstNonEmpty(rec.ModelName, rec.Model),
-			TotalTokens:      rec.TotalTokens,
-			PromptTokens:     rec.PromptTokens,
-			CompletionTokens: rec.CompletionTokens,
-			ResponseTimeMs:   rec.ResponseTimeMs,
-			CreatedAt:        parseTimeOrFileMtime(rec.CreatedAt, path),
-		}
-		if len(rec.Metadata) > 0 {
-			if b, err := json.Marshal(rec.Metadata); err == nil {
-				msg.Metadata = string(b)
-			}
-		}
-		msg.Normalize()
 		if err := msg.Validate(); err != nil {
 			return nil, fmt.Errorf("filewatcher: %s line %d: %w", path, lineNo, err)
 		}
@@ -234,6 +239,97 @@ func (p *JSONLParser) Parse(path, tenantID string) ([]*models.HistoryMessage, er
 		return nil, fmt.Errorf("filewatcher: scan %s: %w", path, err)
 	}
 	return out, nil
+}
+
+// JSONParser 解析通用 JSON：消息数组、单条消息，或 {"messages": [...]} 包装。
+type JSONParser struct{}
+
+// Ext 返回 .json。
+func (p *JSONParser) Ext() string { return ".json" }
+
+// Parse 解析通用 JSON 文件。
+func (p *JSONParser) Parse(path, tenantID string) ([]*models.HistoryMessage, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("filewatcher: read %s: %w", path, err)
+	}
+	trimmed := bytes.TrimSpace(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf")))
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+
+	var records []jsonlRecord
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &records); err != nil {
+			return nil, fmt.Errorf("filewatcher: parse %s: %w", path, err)
+		}
+	} else {
+		var wrapper struct {
+			Messages []jsonlRecord `json:"messages"`
+			Records  []jsonlRecord `json:"records"`
+			Data     []jsonlRecord `json:"data"`
+		}
+		if err := json.Unmarshal(trimmed, &wrapper); err == nil {
+			switch {
+			case len(wrapper.Messages) > 0:
+				records = wrapper.Messages
+			case len(wrapper.Records) > 0:
+				records = wrapper.Records
+			case len(wrapper.Data) > 0:
+				records = wrapper.Data
+			}
+		}
+		if records == nil {
+			var one jsonlRecord
+			if err := json.Unmarshal(trimmed, &one); err != nil {
+				return nil, fmt.Errorf("filewatcher: parse %s: %w", path, err)
+			}
+			records = []jsonlRecord{one}
+		}
+	}
+
+	sessionFallback := deriveSessionID(path)
+	var out []*models.HistoryMessage
+	for i, rec := range records {
+		msg := recordMessage(path, tenantID, rec, strconv.Itoa(i)+firstNonEmpty(rec.Content, rec.Text), sessionFallback)
+		if msg == nil {
+			continue
+		}
+		if err := msg.Validate(); err != nil {
+			return nil, fmt.Errorf("filewatcher: %s record %d: %w", path, i+1, err)
+		}
+		out = append(out, msg)
+	}
+	return out, nil
+}
+
+// recordMessage 把通用 JSON / JSONL 记录转换为消息；content 为空时返回 nil。
+func recordMessage(path, tenantID string, rec jsonlRecord, key, sessionFallback string) *models.HistoryMessage {
+	content := firstNonEmpty(rec.Content, rec.Text)
+	if content == "" {
+		return nil
+	}
+	msg := &models.HistoryMessage{
+		MessageID:        firstNonEmpty(rec.MessageID, rec.ID, deriveID(path, key)),
+		TenantID:         firstNonEmpty(rec.TenantID, tenantID),
+		SessionID:        firstNonEmpty(rec.SessionID, rec.Conversation, sessionFallback),
+		UserID:           rec.UserID,
+		Role:             firstNonEmpty(rec.Role, models.RoleUser),
+		Content:          content,
+		ModelName:        firstNonEmpty(rec.ModelName, rec.Model),
+		TotalTokens:      rec.TotalTokens,
+		PromptTokens:     rec.PromptTokens,
+		CompletionTokens: rec.CompletionTokens,
+		ResponseTimeMs:   rec.ResponseTimeMs,
+		CreatedAt:        parseTimeOrFileMtime(rec.CreatedAt, path),
+	}
+	if len(rec.Metadata) > 0 {
+		if b, err := json.Marshal(rec.Metadata); err == nil {
+			msg.Metadata = string(b)
+		}
+	}
+	msg.Normalize()
+	return msg
 }
 
 // TextParser 按规则提取纯文本：

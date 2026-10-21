@@ -21,6 +21,11 @@ All notable changes to Mneme are documented in this file. The format follows
   folds recent session summaries into a cross-session `evolving_summary` field on the user profile.
   Requires `memory.llm.enabled` and `consumer.session_summary_enabled`. New metric:
   `mnemosyne_mneme_evolution_total{stage,result}`.
+- **`file-adapter` framework formats** — automatically detects Claude Code, Qwen Code, and Kimi CLI
+  JSONL transcripts, Codex CLI rollouts, Gemini CLI sessions, and Claude.ai / ChatGPT
+  `conversations.json` exports (following ChatGPT's `current_node` branch). Qwen Code's legacy
+  single-file `.json` sessions are supported too. Unknown `.json` / `.jsonl` files fall back to the
+  generic parser, and `metadata.framework` records the detected source.
 
 ### Changed
 
@@ -32,6 +37,8 @@ All notable changes to Mneme are documented in this file. The format follows
 - **User session listing** now uses a per-user ZSET index
   (`mnemosyne:mneme:sessions:{tenant}:user:{user_id}`) instead of scanning every session hash;
   missing indexes are backfilled on demand and by the admin "rebuild indexes" action.
+- **`filewatcher.extensions`** now defaults to `.md`, `.jsonl`, `.json`, `.txt` so framework exports
+  are watched out of the box.
 
 ### Fixed
 

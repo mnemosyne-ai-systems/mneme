@@ -320,7 +320,7 @@ func TestWatcherScanAllAndSupported(t *testing.T) {
 
 func TestConfigDefaults(t *testing.T) {
 	c := Config{}.withDefaults()
-	if len(c.Extensions) != 3 || c.Debounce != 2*time.Second || c.TenantID != "default" {
+	if len(c.Extensions) != 4 || c.Debounce != 2*time.Second || c.TenantID != "default" {
 		t.Errorf("defaults = %+v", c)
 	}
 }

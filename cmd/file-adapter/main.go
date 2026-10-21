@@ -1,5 +1,6 @@
-// Command file-adapter 监听本地目录，把 .md/.jsonl/.txt 文件解析为
+// Command file-adapter 监听本地目录，把 .md/.jsonl/.json/.txt 文件解析为
 // HistoryMessage 并投递到 mneme，是 Mneme 的独立文件采集器。
+// .json/.jsonl 会自动识别 Claude Code、Codex CLI、Gemini CLI、Claude/ChatGPT 导出格式。
 // 默认通过 HTTP 推送到服务端批量接口（与消息总线拓扑解耦），
 // 高吞吐可信环境可切换 pulsar 模式直连总线。
 package main

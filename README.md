@@ -42,6 +42,7 @@ Both are served through a unified HTTP API with low-latency reads and first-clas
 | **Three ingestion pipelines** | Conversation history, agent traces, and explicit memory events are published to Pulsar and written asynchronously, absorbing traffic spikes |
 | **Hot/cold storage split** | Redis hot data (Hash + ZSET indexes + TTL) for millisecond reads; ClickHouse cold data (compression + TTL) for retention and analytics |
 | **Automatic profile & summary extraction** | History is aggregated into per-user profiles and per-session summaries by a rule-based extractor that works out of the box |
+| **Framework imports** | `file-adapter` auto-detects Claude Code, Qwen Code, Kimi CLI, Codex CLI, Gemini CLI, and Claude/ChatGPT exports (`.jsonl` / `.json`) alongside generic Markdown, JSON, JSONL, and text |
 | **Optional LLM refinement** | Set `memory.llm.enabled: true` to refine profiles and summaries with an LLM; leave it off for **zero LLM cost** |
 | **Self-evolving summaries** | An optional background job re-reads recent history to rewrite session summaries over bounded rounds and folds recent sessions into a cross-session `evolving_summary` on the user profile |
 | **Data governance** | Soft/hard delete, cursor pagination, time-range filtering, per-user and per-session export; every mutation is written to an audit log in ClickHouse |
@@ -338,8 +339,25 @@ kubectl apply -f deploy/hpa.yaml          # HPA + ServiceMonitor + PrometheusRul
 
 ## File Adapter
 
-`file-adapter` turns local Markdown / JSONL / text files into memory events, with incremental
-watching (fsnotify + debounce + resumable state).
+`file-adapter` turns local conversation files into memory events, with incremental watching
+(fsnotify + debounce + resumable state). JSON / JSONL files are sniffed from the file head, so a
+single directory can mix formats:
+
+| Format | Extensions | Notes |
+|--------|------------|-------|
+| Claude Code | `.jsonl` | `~/.claude/projects/**/*.jsonl`; `type` → role, content blocks, `tool_result` → `tool` |
+| Qwen Code | `.jsonl` / `.json` | `~/.qwen/tmp/*/chats/*.jsonl`; `message.parts` (thoughts skipped), legacy `messages[]` |
+| Kimi CLI | `.jsonl` | `~/.kimi/sessions/*/*/context.jsonl`; `Message` records, `_system_prompt` controls skipped |
+| Codex CLI | `.jsonl` | `~/.codex/sessions/**/rollout-*.jsonl`; `response_item` / `event_msg` payloads |
+| Gemini CLI | `.json` | `~/.gemini/tmp/*/chats/session-*.json`; `messages[]` with `type` `user` / `gemini` |
+| Claude export | `.json` | `conversations.json` containing `chat_messages` |
+| ChatGPT export | `.json` | `conversations.json` containing `mapping`; follows `current_node` |
+| Generic | `.md` / `.jsonl` / `.json` / `.txt` | Frontmatter Markdown, record arrays, plain text |
+
+Message IDs are stable across re-scans (source UUIDs when present, otherwise a content hash), and
+`metadata.framework` records the detected source. Unrecognised JSON falls back to the generic parser;
+domestic clients that export standard `role` / `content` JSON (Chatbox, NextChat, LobeChat, …) are
+handled that way.
 
 ```bash
 ./bin/file-adapter -config ./configs/config.yaml -dir ./data/inbox -mode http
@@ -368,7 +386,7 @@ watching (fsnotify + debounce + resumable state).
 │   ├── config/           # Viper configuration loading and defaults
 │   ├── consumer/         # Pulsar consumers, trace aggregation, profile/summary extraction
 │   ├── evolution/        # scheduled summary reflection and cross-session synthesis
-│   ├── filewatcher/      # file watching and parsing
+│   ├── filewatcher/      # file watching, framework sniffing and parsing
 │   └── service/          # ingestion, profile/session stores, audit, HTTP sink
 ├── pkg/
 │   ├── cache/            # Redis client and L2 cache

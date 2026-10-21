@@ -383,7 +383,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("memory.llm.max_events", 200)
 
 	v.SetDefault("filewatcher.enabled", false)
-	v.SetDefault("filewatcher.extensions", []string{".md", ".jsonl", ".txt"})
+	v.SetDefault("filewatcher.extensions", []string{".md", ".jsonl", ".json", ".txt"})
 	v.SetDefault("filewatcher.debounce", 2*time.Second)
 	v.SetDefault("filewatcher.state_file", "./data/.filewatcher_state.json")
 	v.SetDefault("filewatcher.tenant_id", "default")
