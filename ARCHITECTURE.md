@@ -51,7 +51,7 @@ Module path: `github.com/mnemosyne-ai-systems/mneme` (Go 1.25, single repository
              └──────────────────────────────────────────┘
                             ▲
              Redis (hot)    │  profile Hash / session Hash / version counters
-             mneme:memory:* │  mneme:session:*  mneme:sessver:*
+             mnemosyne:mneme:* │  memory · session · sessver
                             └──────────────────────────────────┘
                                        │
                                        ▼
@@ -118,6 +118,20 @@ Module path: `github.com/mnemosyne-ai-systems/mneme` (Go 1.25, single repository
 - With an LLM enabled, `Summarize` / `RefineSummary` call the model; otherwise
   `SummaryFallback` / `SummaryRefineFallback` degrade to first/last message concatenation.
 
+### 3.3 Summary evolution (`evolution.Job`, optional)
+
+- Every successful summary write schedules the session into a Redis ZSET
+  (`mnemosyne:mneme:evolution:due`, member `{tenant}\x1f{session_id}`).
+- A background job (`evolution.interval`, default `1h`) claims due sessions, loads the latest
+  `evolution.history_limit` messages from ClickHouse, and asks the LLM (`ReflectSummary`) to audit
+  and rewrite the summary. Each summary version is reflected at most `evolution.max_rounds` times
+  (default `2`); unchanged output ends the cycle, and failed rounds are retried on the next scan.
+- When `evolution.user_summary_enabled` is true, the user's recent session summaries (read from the
+  per-user session index) are synthesized together with the existing profile (`SynthesizeProfile`)
+  and merged into the profile field `evolving_summary` (`entity_memory`), producing a cross-session
+  narrative that evolves over time.
+- Requires `memory.llm.enabled` and `consumer.session_summary_enabled`; disabled by default.
+
 ---
 
 ## 4. Configuration (`configs/config.yaml`)
@@ -130,6 +144,11 @@ Module path: `github.com/mnemosyne-ai-systems/mneme` (Go 1.25, single repository
 | `consumer.session_summary_enabled` | `true` | Session-level summarization |
 | `consumer.session_summary_interval` | `10m` | Summary generation cycle |
 | `consumer.session_summary_max_messages` | `2000` | Per-session buffer cap |
+| `evolution.enabled` | `false` | Periodic summary reflection (needs `memory.llm.enabled`) |
+| `evolution.interval` | `1h` | Evolution queue scan cycle |
+| `evolution.max_rounds` | `2` | Reflection rounds per summary version |
+| `evolution.max_users_per_run` | `10` | Users synthesized per scan (bounds LLM calls) |
+| `evolution.user_summary_enabled` | `true` | Fold results into the cross-session `evolving_summary` |
 | `memory.llm.enabled` | `false` | Route profiles and summaries through an LLM |
 | `adapter.mode` | `http` | file-adapter delivery: `http` (default) or `pulsar` |
 | `cache.session_ttl` | `720h` | Session cache TTL (`0` = never expire; 720h recommended) |
@@ -211,7 +230,8 @@ Once enabled:
 - Audit log: `GET /admin/api/audit?limit=` (deletes/exports are recorded, newest first).
 - Trigger summarization immediately: `POST /admin/api/sessions/summarize` (no need to wait for the
   timer).
-- Rebuild the Redis ZSET time index: `POST /admin/api/index/rebuild`.
+- Rebuild the Redis ZSET session and per-user indexes: `POST /admin/api/index/rebuild`
+  (also marks the tenant's per-user indexes as ready).
 
 Lists and search results use **cursor pagination**: responses return `next_cursor`, which you pass
 back as the `cursor` parameter of the next page. Session search and the session list in the
@@ -282,11 +302,15 @@ recommended because it replaces `SCAN`-based listing with `ZREVRANGEBYSCORE` cur
 
 | Key | Type | Purpose |
 |-----|------|---------|
-| `mneme:memory:{tenant}:{entity_type}:{entity_id}` | Hash | Entity profile |
-| `mneme:memver:{tenant}:{entity_type}:{entity_id}` | String | Profile version |
-| `mneme:session:{tenant}:{session_id}` | Hash | Session summary |
-| `mneme:sessver:{tenant}:{session_id}` | String | Summary version |
-| `mneme:users:{tenant}` | ZSET | User time index |
-| `mneme:sessions:{tenant}` | ZSET | Session time index |
-| `mneme:bloom:{pipeline}:{tenant}` | Bloom | Deduplication |
-| `mneme:audit:{tenant}` | List | Audit entries (ClickHouse is authoritative) |
+| `mnemosyne:mneme:memory:{tenant}:{entity_type}:{entity_id}` | Hash | Entity profile |
+| `mnemosyne:mneme:memver:{tenant}:{entity_type}:{entity_id}` | String | Profile version |
+| `mnemosyne:mneme:session:{tenant}:{session_id}` | Hash | Session summary |
+| `mnemosyne:mneme:sessver:{tenant}:{session_id}` | String | Summary version |
+| `mnemosyne:mneme:users:{tenant}` | ZSET | User time index |
+| `mnemosyne:mneme:sessions:{tenant}` | ZSET | Session time index |
+| `mnemosyne:mneme:sessions:{tenant}:user:{user_id}` | ZSET | Per-user session index |
+| `mnemosyne:mneme:sessions:{tenant}:user_ready` | String | Marker: tenant per-user indexes initialized |
+| `mnemosyne:mneme:evolution:due` | ZSET | Sessions awaiting summary reflection |
+| `mnemosyne:mneme:evolution:state:{tenant}:{session_id}` | Hash | Reflection round state |
+| `mnemosyne:mneme:bloom:{pipeline}:{tenant}` | Bloom | Deduplication |
+| `mnemosyne:mneme:audit:{tenant}` | List | Audit entries (ClickHouse is authoritative) |

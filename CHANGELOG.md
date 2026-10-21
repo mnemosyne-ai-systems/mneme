@@ -16,6 +16,11 @@ All notable changes to Mneme are documented in this file. The format follows
   coverage, builds, and a Docker build; tagged releases build multi-architecture images and binaries
   and publish a GitHub Release automatically.
 - **Issue and PR templates**, plus Dependabot for Go modules, GitHub Actions, and Docker.
+- **Self-evolving summaries** (optional) — a background `evolution` job periodically re-reads a
+  session's recent history and rewrites its summary for up to `evolution.max_rounds` rounds, then
+  folds recent session summaries into a cross-session `evolving_summary` field on the user profile.
+  Requires `memory.llm.enabled` and `consumer.session_summary_enabled`. New metric:
+  `mnemosyne_mneme_evolution_total{stage,result}`.
 
 ### Changed
 
@@ -24,6 +29,9 @@ All notable changes to Mneme are documented in this file. The format follows
 - **Image name**: `mnemosyne/mneme` → `mnemosyne-ai-systems/mneme`.
 - **Documentation is now English-first**; code comments, the admin console UI, and OpenAPI
   descriptions remain in Chinese.
+- **User session listing** now uses a per-user ZSET index
+  (`mnemosyne:mneme:sessions:{tenant}:user:{user_id}`) instead of scanning every session hash;
+  missing indexes are backfilled on demand and by the admin "rebuild indexes" action.
 
 ### Fixed
 

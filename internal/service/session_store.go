@@ -12,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/mnemosyne-ai-systems/mneme/pkg/cache"
+	"github.com/mnemosyne-ai-systems/mneme/pkg/logger"
 	"github.com/mnemosyne-ai-systems/mneme/pkg/models"
 	"github.com/mnemosyne-ai-systems/mneme/pkg/storage"
 )
@@ -37,7 +38,7 @@ type SessionSummaryStore interface {
 	PurgeSessionsByUser(ctx context.Context, tenant, userID string) error
 	// CreateSession 创建会话（先写 ClickHouse，再写 Redis，保证一致性）。
 	CreateSession(ctx context.Context, summary *models.SessionSummary) error
-	// RebuildSessionsIndex 重建会话 ZSET 索引（从 Hash 回填，幂等）。
+	// RebuildSessionsIndex 重建会话 ZSET 索引与每用户会话索引（从 Hash 回填，幂等）。
 	RebuildSessionsIndex(ctx context.Context, tenant string) (int64, error)
 }
 
@@ -106,6 +107,13 @@ func (s *RedisSessionSummaryStore) SaveSessionInfo(ctx context.Context, tenant, 
 		idxKey := cache.SessionsIndexKey(tenant)
 		score := float64(endedAt.UnixMilli())
 		pipe.ZAdd(ctx, idxKey, redis.Z{Score: score, Member: sessionID})
+		if userID != "" {
+			userIdxKey := cache.UserSessionsIndexKey(tenant, userID)
+			pipe.ZAdd(ctx, userIdxKey, redis.Z{Score: score, Member: sessionID})
+			if s.ttl > 0 {
+				pipe.Expire(ctx, userIdxKey, s.ttl)
+			}
+		}
 		if s.ttl > 0 {
 			pipe.Expire(ctx, idxKey, s.ttl)
 		}
@@ -151,6 +159,13 @@ func (s *RedisSessionSummaryStore) SaveSummary(ctx context.Context, summary *mod
 		idxKey := cache.SessionsIndexKey(summary.TenantID)
 		score := float64(summary.EndedAt.UnixMilli())
 		pipe.ZAdd(ctx, idxKey, redis.Z{Score: score, Member: summary.SessionID})
+		if summary.UserID != "" {
+			userIdxKey := cache.UserSessionsIndexKey(summary.TenantID, summary.UserID)
+			pipe.ZAdd(ctx, userIdxKey, redis.Z{Score: score, Member: summary.SessionID})
+			if s.ttl > 0 {
+				pipe.Expire(ctx, userIdxKey, s.ttl)
+			}
+		}
 		if s.ttl > 0 {
 			pipe.Expire(ctx, idxKey, s.ttl)
 		}
@@ -211,6 +226,13 @@ func (s *RedisSessionSummaryStore) CreateSession(ctx context.Context, summary *m
 		idxKey := cache.SessionsIndexKey(summary.TenantID)
 		score := float64(summary.EndedAt.UnixMilli())
 		pipe.ZAdd(ctx, idxKey, redis.Z{Score: score, Member: summary.SessionID})
+		if summary.UserID != "" {
+			userIdxKey := cache.UserSessionsIndexKey(summary.TenantID, summary.UserID)
+			pipe.ZAdd(ctx, userIdxKey, redis.Z{Score: score, Member: summary.SessionID})
+			if s.ttl > 0 {
+				pipe.Expire(ctx, userIdxKey, s.ttl)
+			}
+		}
 		if s.ttl > 0 {
 			pipe.Expire(ctx, idxKey, s.ttl)
 		}
@@ -234,8 +256,17 @@ func (s *RedisSessionSummaryStore) GetSummary(ctx context.Context, tenant, sessi
 	return sessionFromHash(res), nil
 }
 
-// ListSessionsByUser 扫描该租户下的会话 Hash，按 user_id 过滤并按结束时间倒序返回。
+// ListSessionsByUser 返回属于指定用户的全部会话总结（按结束时间倒序）。
+// 启用 ZSET 索引时走每用户会话索引，否则回退 SCAN。
 func (s *RedisSessionSummaryStore) ListSessionsByUser(ctx context.Context, tenant, userID string) ([]*models.SessionSummary, error) {
+	if s.useZSetIndex {
+		return s.listUserSessionsByIndex(ctx, tenant, userID, time.Time{}, time.Time{})
+	}
+	return s.scanSessionsByUser(ctx, tenant, userID)
+}
+
+// scanSessionsByUser 扫描该租户下的会话 Hash，按 user_id 过滤并按结束时间倒序返回。
+func (s *RedisSessionSummaryStore) scanSessionsByUser(ctx context.Context, tenant, userID string) ([]*models.SessionSummary, error) {
 	iter := s.client.Scan(ctx, 0, cache.SessionKey(tenant, "*"), 0).Iterator()
 	var out []*models.SessionSummary
 	for iter.Next(ctx) {
@@ -243,7 +274,7 @@ func (s *RedisSessionSummaryStore) ListSessionsByUser(ctx context.Context, tenan
 		if err != nil {
 			return nil, fmt.Errorf("session store: hgetall: %w", err)
 		}
-		if res[cache.DeletedField] == "1" {
+		if len(res) == 0 || res[cache.DeletedField] == "1" {
 			continue
 		}
 		if res["user_id"] != userID {
@@ -256,6 +287,123 @@ func (s *RedisSessionSummaryStore) ListSessionsByUser(ctx context.Context, tenan
 	}
 	sortSessionsByEndedAt(out)
 	return out, nil
+}
+
+// listUserSessionsByIndex 通过每用户 ZSET 索引读取会话（按 ended_at 倒序）。
+// 租户首次启用每用户索引时自动从会话 Hash 回填一次，兼容启用前的历史数据。
+func (s *RedisSessionSummaryStore) listUserSessionsByIndex(ctx context.Context, tenant, userID string, startTime, endTime time.Time) ([]*models.SessionSummary, error) {
+	if err := s.ensureUserSessionsIndex(ctx, tenant); err != nil {
+		return nil, err
+	}
+
+	idxKey := cache.UserSessionsIndexKey(tenant, userID)
+	minScore := "-inf"
+	if !startTime.IsZero() {
+		minScore = fmt.Sprintf("%d", startTime.UnixMilli())
+	}
+	// 注意：ZSET 分数是 ended_at，不能用 endTime 作为 maxScore，否则会漏掉
+	// started_at <= endTime 但 ended_at > endTime 的跨界会话。
+	ids, err := s.client.ZRevRangeByScore(ctx, idxKey, &redis.ZRangeBy{Min: minScore, Max: "+inf"}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("session store: zrevrangebyscore user index: %w", err)
+	}
+
+	out := make([]*models.SessionSummary, 0, len(ids))
+	var stale []interface{}
+	for _, sessionID := range ids {
+		res, err := s.client.HGetAll(ctx, cache.SessionKey(tenant, sessionID)).Result()
+		if err != nil {
+			return nil, fmt.Errorf("session store: hgetall: %w", err)
+		}
+		if len(res) == 0 || res["user_id"] != userID {
+			// 会话已被硬删除或已归属其他用户：清理索引中的残留成员。
+			stale = append(stale, sessionID)
+			continue
+		}
+		if res[cache.DeletedField] == "1" {
+			continue
+		}
+		sum := sessionFromHash(res)
+		if !startTime.IsZero() && sum.EndedAt.Before(startTime) {
+			continue
+		}
+		if !endTime.IsZero() && sum.StartedAt.After(endTime) {
+			continue
+		}
+		out = append(out, sum)
+	}
+	if len(stale) > 0 {
+		_ = s.client.ZRem(ctx, idxKey, stale...).Err()
+	}
+	return out, nil
+}
+
+// ensureUserSessionsIndex 确保租户的每用户会话索引已完成首次回填。
+// 按租户标记而非按用户标记，避免新用户首次查询或空会话用户每次查询都触发全量 SCAN。
+func (s *RedisSessionSummaryStore) ensureUserSessionsIndex(ctx context.Context, tenant string) error {
+	readyKey := cache.UserSessionsIndexReadyKey(tenant)
+	ready, err := s.client.Exists(ctx, readyKey).Result()
+	if err != nil {
+		return fmt.Errorf("session store: exists user index marker: %w", err)
+	}
+	if ready > 0 {
+		return nil
+	}
+
+	iter := s.client.Scan(ctx, 0, cache.SessionKey(tenant, "*"), 1000).Iterator()
+	pipe := s.client.TxPipeline()
+	userIdxKeys := make(map[string]struct{})
+	sessions := 0
+	batched := 0
+	for iter.Next(ctx) {
+		res, err := s.client.HGetAll(ctx, iter.Val()).Result()
+		if err != nil {
+			return fmt.Errorf("session store: hgetall: %w", err)
+		}
+		if len(res) == 0 || res[cache.DeletedField] == "1" {
+			continue
+		}
+		userID := res["user_id"]
+		sessionID := res["session_id"]
+		if userID == "" || sessionID == "" {
+			continue
+		}
+		endedAt, err := time.Parse(time.RFC3339, res["ended_at"])
+		if err != nil {
+			continue
+		}
+		userIdxKey := cache.UserSessionsIndexKey(tenant, userID)
+		pipe.ZAdd(ctx, userIdxKey, redis.Z{Score: float64(endedAt.UnixMilli()), Member: sessionID})
+		userIdxKeys[userIdxKey] = struct{}{}
+		sessions++
+		batched++
+		// 分批提交，避免单事务过大时长时间阻塞 Redis。
+		if batched >= 2000 {
+			if _, err := pipe.Exec(ctx); err != nil {
+				return fmt.Errorf("session store: backfill user index: %w", err)
+			}
+			pipe = s.client.TxPipeline()
+			batched = 0
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("session store: scan: %w", err)
+	}
+	if s.ttl > 0 {
+		for userIdxKey := range userIdxKeys {
+			pipe.Expire(ctx, userIdxKey, s.ttl)
+		}
+	}
+	pipe.Set(ctx, readyKey, "1", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("session store: backfill user index: %w", err)
+	}
+	logger.L().WithFields(map[string]interface{}{
+		"tenant":   tenant,
+		"sessions": sessions,
+		"users":    len(userIdxKeys),
+	}).Info("backfilled per-user session indexes")
+	return nil
 }
 
 // SearchSessions 检索会话总结（管理后台），支持按 user_id 与关键字过滤、游标分页、按时间倒序、时间范围过滤。
@@ -281,8 +429,36 @@ func (s *RedisSessionSummaryStore) SearchSessions(ctx context.Context, tenant st
 		}
 	}
 
-	// 带 user_id/关键字过滤时 ZSET 只能先分页后过滤，会漏结果，回退到全量 SCAN。
-	if s.useZSetIndex && opts.UserID == "" && q == "" {
+	// 按用户过滤时走每用户会话索引；仅关键字过滤仍需全量 SCAN。
+	if s.useZSetIndex && opts.UserID != "" {
+		all, err := s.listUserSessionsByIndex(ctx, tenant, opts.UserID, startTime, endTime)
+		if err != nil {
+			return nil, "", err
+		}
+		if q != "" {
+			filtered := make([]*models.SessionSummary, 0, len(all))
+			for _, sum := range all {
+				if strings.Contains(strings.ToLower(sum.SessionID+" "+sum.Summary), q) {
+					filtered = append(filtered, sum)
+				}
+			}
+			all = filtered
+		}
+		offset := decodeCursor(opts.Cursor)
+		if offset > len(all) {
+			offset = len(all)
+		}
+		end := offset + limit
+		if end > len(all) {
+			end = len(all)
+		}
+		next := ""
+		if end < len(all) {
+			next = encodeCursor(end)
+		}
+		return all[offset:end], next, nil
+	}
+	if s.useZSetIndex && q == "" {
 		return s.searchSessionsZSet(ctx, tenant, opts, limit, q, startTime, endTime)
 	}
 
@@ -408,9 +584,16 @@ func (s *RedisSessionSummaryStore) DeleteSession(ctx context.Context, tenant, se
 func (s *RedisSessionSummaryStore) PurgeSession(ctx context.Context, tenant, sessionID string) error {
 	key := cache.SessionKey(tenant, sessionID)
 	verKey := cache.SessionVersionKey(tenant, sessionID)
+	userID, err := s.client.HGet(ctx, key, "user_id").Result()
+	if err != nil && err != redis.Nil {
+		return fmt.Errorf("session store: hget user: %w", err)
+	}
 	pipe := s.client.TxPipeline()
 	pipe.Del(ctx, key, verKey)
 	pipe.ZRem(ctx, cache.SessionsIndexKey(tenant), sessionID)
+	if userID != "" {
+		pipe.ZRem(ctx, cache.UserSessionsIndexKey(tenant, userID), sessionID)
+	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("session store: del: %w", err)
 	}
@@ -442,6 +625,9 @@ func (s *RedisSessionSummaryStore) PurgeSessionsByUser(ctx context.Context, tena
 			return err
 		}
 	}
+	if err := s.client.Del(ctx, cache.UserSessionsIndexKey(tenant, userID)).Err(); err != nil {
+		return fmt.Errorf("session store: del user index: %w", err)
+	}
 	return nil
 }
 
@@ -452,10 +638,21 @@ func (s *RedisSessionSummaryStore) RebuildSessionsIndex(ctx context.Context, ten
 	pattern := cache.SessionKey(tenant, "*")
 
 	// 先清空旧索引（幂等）
-	if err := s.client.Del(ctx, idxKey).Err(); err != nil {
+	if err := s.client.Del(ctx, idxKey, cache.UserSessionsIndexReadyKey(tenant)).Err(); err != nil {
 		return 0, fmt.Errorf("session store: del index: %w", err)
 	}
+	// 清空该租户下所有用户会话索引，随后按 Hash 重建。
+	userIter := s.client.Scan(ctx, 0, cache.UserSessionsIndexKey(tenant, "*"), 1000).Iterator()
+	for userIter.Next(ctx) {
+		if err := s.client.Del(ctx, userIter.Val()).Err(); err != nil {
+			return 0, fmt.Errorf("session store: del user index: %w", err)
+		}
+	}
+	if err := userIter.Err(); err != nil {
+		return 0, fmt.Errorf("session store: scan user index: %w", err)
+	}
 
+	userIdxKeys := make(map[string]struct{})
 	var count int64
 	iter := s.client.Scan(ctx, 0, pattern, 1000).Iterator()
 	for iter.Next(ctx) {
@@ -480,16 +677,31 @@ func (s *RedisSessionSummaryStore) RebuildSessionsIndex(ctx context.Context, ten
 		if err := s.client.ZAdd(ctx, cache.SessionsIndexKey(tenant), redis.Z{Score: score, Member: sessionID}).Err(); err != nil {
 			return count, fmt.Errorf("session store: zadd: %w", err)
 		}
+		if userID := res["user_id"]; userID != "" {
+			userIdxKey := cache.UserSessionsIndexKey(tenant, userID)
+			if err := s.client.ZAdd(ctx, userIdxKey, redis.Z{Score: score, Member: sessionID}).Err(); err != nil {
+				return count, fmt.Errorf("session store: zadd user index: %w", err)
+			}
+			userIdxKeys[userIdxKey] = struct{}{}
+		}
 		count++
 	}
 	if err := iter.Err(); err != nil {
 		return count, fmt.Errorf("session store: scan: %w", err)
 	}
-	// 同步设置 ZSET TTL
+	// 重建完成后同步 TTL 并标记租户的每用户索引已就绪。
 	if s.ttl > 0 {
 		if err := s.client.Expire(ctx, cache.SessionsIndexKey(tenant), s.ttl).Err(); err != nil {
 			return count, fmt.Errorf("session store: expire index: %w", err)
 		}
+		for userIdxKey := range userIdxKeys {
+			if err := s.client.Expire(ctx, userIdxKey, s.ttl).Err(); err != nil {
+				return count, fmt.Errorf("session store: expire user index: %w", err)
+			}
+		}
+	}
+	if err := s.client.Set(ctx, cache.UserSessionsIndexReadyKey(tenant), "1", 0).Err(); err != nil {
+		return count, fmt.Errorf("session store: mark user index ready: %w", err)
 	}
 	return count, nil
 }

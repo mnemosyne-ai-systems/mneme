@@ -43,6 +43,7 @@ Both are served through a unified HTTP API with low-latency reads and first-clas
 | **Hot/cold storage split** | Redis hot data (Hash + ZSET indexes + TTL) for millisecond reads; ClickHouse cold data (compression + TTL) for retention and analytics |
 | **Automatic profile & summary extraction** | History is aggregated into per-user profiles and per-session summaries by a rule-based extractor that works out of the box |
 | **Optional LLM refinement** | Set `memory.llm.enabled: true` to refine profiles and summaries with an LLM; leave it off for **zero LLM cost** |
+| **Self-evolving summaries** | An optional background job re-reads recent history to rewrite session summaries over bounded rounds and folds recent sessions into a cross-session `evolving_summary` on the user profile |
 | **Data governance** | Soft/hard delete, cursor pagination, time-range filtering, per-user and per-session export; every mutation is written to an audit log in ClickHouse |
 | **Admin console** | Dependency-free single-page console at `/admin` for profile browsing, session search, collapsible long messages, and one-click index rebuild |
 | **Batched writes** | `BatchInserter` flushes on row count, time, or byte thresholds; failed batches are requeued and retried; buffers are flushed on shutdown |
@@ -173,7 +174,7 @@ A ready-to-run collection of requests lives in [mneme.http](mneme.http) (Intelli
 | `GET` | `/admin/api/sessions/{session_id}/export` | Export session data |
 | `DELETE` | `/admin/api/sessions/{session_id}` | Delete a session (`?hard=true` for a permanent delete) |
 | `POST` | `/admin/api/sessions/summarize` | Trigger a summary pass immediately |
-| `POST` | `/admin/api/index/rebuild` | Rebuild the Redis ZSET time index |
+| `POST` | `/admin/api/index/rebuild` | Rebuild the Redis ZSET session and per-user indexes |
 | `GET` | `/admin/api/audit` | Query the audit log |
 
 ### Operations
@@ -207,6 +208,10 @@ values, e.g. `MNEME_SERVER_PORT`). Frequently used keys:
 | `cache` | `use_zset_index` | `true` | Use ZSET time indexes instead of `SCAN` |
 | `consumer` | `session_summary_interval` | `10m` | Session summarization cycle |
 | `consumer` | `history_profile_interval` | `10m` | Profile extraction cycle |
+| `evolution` | `enabled` | `false` | Periodic summary reflection (needs `memory.llm.enabled`) |
+| `evolution` | `interval` / `max_rounds` | `1h` / `2` | Queue scan cycle and reflection bound |
+| `evolution` | `max_users_per_run` | `10` | Users synthesized per scan (bounds LLM calls) |
+| `evolution` | `user_summary_enabled` | `true` | Fold results into the cross-session `evolving_summary` |
 | `memory.llm` | `enabled` | `false` | Use an LLM to refine profiles/summaries |
 | `telemetry` | `metrics_enabled` | `true` | Expose `/metrics` |
 | `telemetry` | `tracing_enabled` | `false` | Export traces over OTLP |
@@ -239,14 +244,18 @@ timestamp columns.
 
 | Key | Type | Purpose |
 |-----|------|---------|
-| `mneme:memory:{tenant}:{type}:{id}` | Hash | Entity profile |
-| `mneme:memver:{tenant}:{type}:{id}` | String | Profile version (optimistic concurrency) |
-| `mneme:session:{tenant}:{session_id}` | Hash | Session summary |
-| `mneme:sessver:{tenant}:{session_id}` | String | Summary version |
-| `mneme:users:{tenant}` | ZSET | User time index (cursor pagination) |
-| `mneme:sessions:{tenant}` | ZSET | Session time index (cursor pagination) |
-| `mneme:bloom:{pipeline}:{tenant}` | Bloom | Message deduplication |
-| `mneme:audit:{tenant}` | List | Audit log (ClickHouse is the source of truth) |
+| `mnemosyne:mneme:memory:{tenant}:{type}:{id}` | Hash | Entity profile |
+| `mnemosyne:mneme:memver:{tenant}:{type}:{id}` | String | Profile version (optimistic concurrency) |
+| `mnemosyne:mneme:session:{tenant}:{session_id}` | Hash | Session summary |
+| `mnemosyne:mneme:sessver:{tenant}:{session_id}` | String | Summary version |
+| `mnemosyne:mneme:users:{tenant}` | ZSET | User time index (cursor pagination) |
+| `mnemosyne:mneme:sessions:{tenant}` | ZSET | Session time index (cursor pagination) |
+| `mnemosyne:mneme:sessions:{tenant}:user:{user_id}` | ZSET | Per-user session index (newest first) |
+| `mnemosyne:mneme:sessions:{tenant}:user_ready` | String | Marker: tenant per-user indexes initialized |
+| `mnemosyne:mneme:evolution:due` | ZSET | Sessions awaiting summary reflection |
+| `mnemosyne:mneme:evolution:state:{tenant}:{session_id}` | Hash | Reflection round state |
+| `mnemosyne:mneme:bloom:{pipeline}:{tenant}` | Bloom | Message deduplication |
+| `mnemosyne:mneme:audit:{tenant}` | List | Audit log (ClickHouse is the source of truth) |
 
 Hot reads fall through to ClickHouse on a miss and repopulate Redis.
 
@@ -264,6 +273,7 @@ Hot reads fall through to ClickHouse on a miss and repopulate Redis.
 | `consumer_lag` / `consumer_errors_total` | Gauge / Counter | Consumer backlog and errors |
 | `dedup_filtered_total` | Counter | Bloom-filter dedup hits |
 | `memory_extract_total` / `trace_aggregation_flush_total` | Counter | Extraction and aggregation runs |
+| `evolution_total` | Counter | Summary evolution outcomes (`stage=session/user`, `result=evolved/skipped/error`) |
 | `quality_check_total` | Counter | Data quality check results |
 | `mneme_write_queue_size` / `mneme_write_duration_seconds` | Gauge / Histogram | Write backlog and write latency |
 
